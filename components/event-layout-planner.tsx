@@ -6,19 +6,13 @@ import {
   BadgeCheck,
   Camera,
   CircleDot,
-  DoorOpen,
   Download,
   Fence,
-  Flower2,
-  Grid3X3,
   Layers,
   Move,
-  Music,
   RotateCcw,
   Sofa,
-  Sparkles,
   Trash2,
-  Utensils,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -45,6 +39,7 @@ type PlannerTemplate = {
   label: string;
   width: number;
   height: number;
+  imageSrc?: string;
   fill: string;
   stroke: string;
   accent: string;
@@ -81,12 +76,31 @@ type Point = {
   y: number;
 };
 
+export type EventLayoutPlannerPlan = {
+  venue: {
+    lengthFt: number;
+    widthFt: number;
+    areaSqFt: number;
+  };
+  objects: Array<{
+    id: string;
+    kind: PlannerObjectKind;
+    label: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    rotation: number;
+  }>;
+};
+
 const templates: PlannerTemplate[] = [
   {
     kind: "chair",
     label: "Guest chair",
     width: 4,
     height: 4,
+    imageSrc: "/guest-chair.jpg",
     fill: "#f8d98b",
     stroke: "#a86e11",
     accent: "#fff4d1",
@@ -97,6 +111,7 @@ const templates: PlannerTemplate[] = [
     label: "Wedding stage",
     width: 28,
     height: 12,
+    imageSrc: "/wedding-stage.jpeg",
     fill: "#d9ead7",
     stroke: "#4d7c58",
     accent: "#f6fbf3",
@@ -107,6 +122,7 @@ const templates: PlannerTemplate[] = [
     label: "Couple sofa",
     width: 14,
     height: 6,
+    imageSrc: "/couple-sofa.jpeg",
     fill: "#f4b6c2",
     stroke: "#b23a5a",
     accent: "#ffe7ec",
@@ -117,91 +133,93 @@ const templates: PlannerTemplate[] = [
     label: "Floral backdrop",
     width: 30,
     height: 5,
+    imageSrc: "/floral-backdrop.jpg",
     fill: "#bcd7f6",
     stroke: "#366da8",
     accent: "#edf6ff",
     icon: Camera,
   },
-  {
-    kind: "mandap",
-    label: "Mandap",
-    width: 16,
-    height: 16,
-    fill: "#f4dfc1",
-    stroke: "#9b6237",
-    accent: "#fff7e9",
-    icon: Sparkles,
-  },
-  {
-    kind: "dining",
-    label: "Dining table",
-    width: 12,
-    height: 6,
-    fill: "#c7e7e1",
-    stroke: "#24756d",
-    accent: "#edfffb",
-    icon: Utensils,
-  },
-  {
-    kind: "dance",
-    label: "Dance floor",
-    width: 18,
-    height: 14,
-    fill: "#ddd2ff",
-    stroke: "#6a56a4",
-    accent: "#f4f0ff",
-    icon: Grid3X3,
-  },
-  {
-    kind: "photo",
-    label: "Photo booth",
-    width: 10,
-    height: 8,
-    fill: "#ffc9a8",
-    stroke: "#b45b2f",
-    accent: "#fff0e7",
-    icon: Camera,
-  },
-  {
-    kind: "entry",
-    label: "Entry gate",
-    width: 12,
-    height: 4,
-    fill: "#cbd5e1",
-    stroke: "#475569",
-    accent: "#f8fafc",
-    icon: DoorOpen,
-  },
+  // {
+  //   kind: "mandap",
+  //   label: "Mandap",
+  //   width: 16,
+  //   height: 16,
+  //   fill: "#f4dfc1",
+  //   stroke: "#9b6237",
+  //   accent: "#fff7e9",
+  //   icon: Sparkles,
+  // },
+  // {
+  //   kind: "dining",
+  //   label: "Dining table",
+  //   width: 12,
+  //   height: 6,
+  //   fill: "#c7e7e1",
+  //   stroke: "#24756d",
+  //   accent: "#edfffb",
+  //   icon: Utensils,
+  // },
+  // {
+  //   kind: "dance",
+  //   label: "Dance floor",
+  //   width: 18,
+  //   height: 14,
+  //   fill: "#ddd2ff",
+  //   stroke: "#6a56a4",
+  //   accent: "#f4f0ff",
+  //   icon: Grid3X3,
+  // },
+  // {
+  //   kind: "photo",
+  //   label: "Photo booth",
+  //   width: 10,
+  //   height: 8,
+  //   fill: "#ffc9a8",
+  //   stroke: "#b45b2f",
+  //   accent: "#fff0e7",
+  //   icon: Camera,
+  // },
+  // {
+  //   kind: "entry",
+  //   label: "Entry gate",
+  //   width: 12,
+  //   height: 4,
+  //   fill: "#cbd5e1",
+  //   stroke: "#475569",
+  //   accent: "#f8fafc",
+  //   icon: DoorOpen,
+  // },
   {
     kind: "aisle",
     label: "Aisle runner",
     width: 8,
     height: 28,
+    imageSrc: "/aisle-runner.jpg",
     fill: "#fee2e2",
     stroke: "#b91c1c",
     accent: "#fff7f7",
     icon: Fence,
   },
-  {
-    kind: "dj",
-    label: "DJ console",
-    width: 12,
-    height: 5,
-    fill: "#d1d5db",
-    stroke: "#374151",
-    accent: "#f9fafb",
-    icon: Music,
-  },
-  {
-    kind: "decor",
-    label: "Decor island",
-    width: 7,
-    height: 7,
-    fill: "#dcfce7",
-    stroke: "#15803d",
-    accent: "#f0fdf4",
-    icon: Flower2,
-  },
+  // {
+  //   kind: "dj",
+  //   label: "DJ console",
+  //   width: 12,
+  //   height: 5,
+  //   fill: "#d1d5db",
+  //   stroke: "#374151",
+  //   accent: "#f9fafb",
+  //   icon: Music,
+  // },
+  // {
+  //   kind: "decor",
+  //   label: "Decor island",
+  //   width: 7,
+  //   height: 7,
+  //   fill: "#dcfce7",
+  //   stroke: "#15803d",
+  //   accent: "#f0fdf4",
+  //   icon: Flower2,
+  // },
 ];
 
 const templateByKind = new Map(
@@ -330,7 +348,13 @@ const objectsOverlap = (first: PlannerObject, second: PlannerObject) =>
 
 const formatNumber = (value: number) => Number(value.toFixed(1));
 
-export function EventLayoutPlanner() {
+export function EventLayoutPlanner({
+  onPlanChange,
+  onContinue,
+}: {
+  onPlanChange?: (plan: EventLayoutPlannerPlan) => void;
+  onContinue?: () => void;
+}) {
   const [venueLength, setVenueLength] = React.useState(90);
   const [venueWidth, setVenueWidth] = React.useState(55);
   const [objects, setObjects] = React.useState<PlannerObject[]>(defaultObjects);
@@ -383,6 +407,28 @@ export function EventLayoutPlanner() {
   }, [venueLength, venueWidth]);
 
   const snapshotHeight = venueWidth + 16 + objects.length * 4.5;
+  const venueAreaSqFt = venueLength * venueWidth;
+
+  React.useEffect(() => {
+    if (!onPlanChange) return;
+    onPlanChange({
+      venue: {
+        lengthFt: venueLength,
+        widthFt: venueWidth,
+        areaSqFt: venueAreaSqFt,
+      },
+      objects: objects.map((object) => ({
+        id: object.id,
+        kind: object.kind,
+        label: object.label,
+        x: formatNumber(object.x),
+        y: formatNumber(object.y),
+        width: formatNumber(object.width),
+        height: formatNumber(object.height),
+        rotation: object.rotation,
+      })),
+    });
+  }, [objects, onPlanChange, venueAreaSqFt, venueLength, venueWidth]);
 
   const getPointInVenue = React.useCallback(
     (clientX: number, clientY: number) => {
@@ -774,7 +820,7 @@ export function EventLayoutPlanner() {
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold">Venue size</h2>
               <span className="rounded-md bg-[#eef3ea] px-2 py-1 text-xs font-medium text-[#45614c]">
-                {venueLength * venueWidth} sq ft
+                {venueAreaSqFt} sq ft
               </span>
             </div>
 
@@ -817,7 +863,26 @@ export function EventLayoutPlanner() {
                     className="flex min-h-24 flex-col items-start justify-between rounded-lg border border-[#ddd6c7] bg-[#fbfaf7] p-3 text-left transition hover:border-[#8ca17f] hover:bg-[#f4f8ef]"
                     title={`Add ${template.label}`}
                   >
-                    <Icon className="size-5" />
+                    <span className="relative w-full overflow-hidden rounded-lg border border-[#e7e0d4] bg-white">
+                      <span className="block h-16 w-full bg-[#fbfaf7]">
+                        {template.imageSrc ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={template.imageSrc}
+                            alt={template.label}
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                            onError={(event) => {
+                              (event.currentTarget as HTMLImageElement).style.display =
+                                "none";
+                            }}
+                          />
+                        ) : null}
+                      </span>
+                      <span className="absolute left-2 top-2 flex size-7 items-center justify-center rounded-md bg-white/90 shadow-sm ring-1 ring-black/5">
+                        <Icon className="size-4 text-[#1f2520]" />
+                      </span>
+                    </span>
                     <span className="text-sm font-semibold leading-tight">
                       {template.label}
                     </span>
@@ -851,6 +916,17 @@ export function EventLayoutPlanner() {
               Snapshot
             </Button>
           </div>
+
+          {onContinue ? (
+            <Button
+              type="button"
+              className="mt-2 w-full bg-[#111827] text-white hover:bg-[#0b1220]"
+              onClick={onContinue}
+              title="Continue to event details"
+            >
+              Continue
+            </Button>
+          ) : null}
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col gap-3 lg:overflow-hidden">
