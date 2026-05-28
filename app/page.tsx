@@ -14,6 +14,7 @@ export default function Home() {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
   const [step, setStep] = React.useState<"layout" | "details">("layout")
   const [plan, setPlan] = React.useState<EventLayoutPlannerPlan | null>(null)
+  const [submitSuccess, setSubmitSuccess] = React.useState(false)
   const [eventDetails, setEventDetails] = React.useState({
     venueName: "",
     venueType: "indoor" as VenueType,
@@ -129,16 +130,11 @@ export default function Home() {
         ...eventDetails,
       },
     }
+    // TODO: send `payload` to your API/AI endpoint.
+    void payload
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json;charset=utf-8",
-    })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement("a")
-    link.download = "event-layout-plan.json"
-    link.href = url
-    link.click()
-    URL.revokeObjectURL(url)
+    setSubmitSuccess(true)
+    window.setTimeout(() => setSubmitSuccess(false), 2500)
   }
 
   return (
@@ -213,8 +209,7 @@ export default function Home() {
                   Event details & submit
                 </h1>
                 <p className="mt-2 text-sm text-[#596153]">
-                  Add details like lighting, colors, and venue info. Submit will
-                  download a JSON you can send to your AI/backend.
+                  Add details like lighting, colors, and venue info.
                 </p>
               </div>
 
@@ -224,7 +219,13 @@ export default function Home() {
             </div>
 
             <div className="rounded-xl border border-[#d8d1c3] bg-white p-4 shadow-sm">
-              <div className="grid gap-3 sm:grid-cols-2">
+              {submitSuccess ? (
+                <div className="mb-3 rounded-lg border border-[#b7e0c2] bg-[#edf8f0] px-3 py-2 text-sm font-medium text-[#1f5a33]">
+                  Event layout plan submitted successfully.
+                </div>
+              ) : null}
+
+              {/* <div className="grid gap-3 sm:grid-cols-2">
                 <TextField
                   label="Venue name"
                   value={eventDetails.venueName}
@@ -238,7 +239,7 @@ export default function Home() {
                   suffix="guests"
                   onChange={(value) => updateEventDetails("guestCount", value)}
                 />
-              </div>
+              </div> */}
 
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <SelectField
@@ -254,7 +255,7 @@ export default function Home() {
                     updateEventDetails("venueType", value as VenueType)
                   }
                 />
-                <SelectField
+                {/* <SelectField
                   label="Open / access"
                   value={eventDetails.accessType}
                   options={[
@@ -265,11 +266,11 @@ export default function Home() {
                   onChange={(value) =>
                     updateEventDetails("accessType", value as AccessType)
                   }
-                />
+                /> */}
               </div>
 
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <SelectField
+                {/* <SelectField
                   label="Lighting"
                   value={eventDetails.lighting}
                   options={[
@@ -282,15 +283,15 @@ export default function Home() {
                   onChange={(value) =>
                     updateEventDetails("lighting", value as LightingPreset)
                   }
-                />
-                <TextField
+                /> */}
+                <TextAreaField
                   label="Lighting notes"
                   value={eventDetails.lightingNotes}
                   onChange={(value) => updateEventDetails("lightingNotes", value)}
                 />
               </div>
 
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {/* <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <TextField
                   label="Primary colors"
                   value={eventDetails.primaryColors}
@@ -303,7 +304,7 @@ export default function Home() {
                     updateEventDetails("secondaryColors", value)
                   }
                 />
-              </div>
+              </div> */}
 
               <div className="mt-3">
                 <TextAreaField
@@ -336,66 +337,6 @@ export default function Home() {
   )
 }
 
-function NumberField({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  suffix,
-  onChange,
-}: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step?: number
-  suffix: string
-  onChange: (value: number) => void
-}) {
-  return (
-    <label className="block space-y-1.5">
-      <span className="text-xs font-medium text-[#5c6659]">{label}</span>
-      <span className="flex h-9 items-center rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] focus-within:border-[#66835d] focus-within:ring-2 focus-within:ring-[#66835d]/20">
-        <input
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={Number.isFinite(value) ? value : min}
-          onChange={(event) => onChange(Number(event.target.value))}
-          className="h-full min-w-0 flex-1 bg-transparent px-3 text-sm font-medium outline-none"
-        />
-        <span className="px-3 text-xs font-semibold text-[#6f756a]">
-          {suffix}
-        </span>
-      </span>
-    </label>
-  )
-}
-
-function TextField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <label className="block space-y-1.5">
-      <span className="text-xs font-medium text-[#5c6659]">{label}</span>
-      <input
-        type="text"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-9 w-full rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] px-3 text-sm font-medium outline-none focus:border-[#66835d] focus:ring-2 focus:ring-[#66835d]/20"
-      />
-    </label>
-  )
-}
-
 function TextAreaField({
   label,
   value,
@@ -411,7 +352,7 @@ function TextAreaField({
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        rows={4}
+        rows={3}
         className="w-full resize-y rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] px-3 py-2 text-sm font-medium outline-none focus:border-[#66835d] focus:ring-2 focus:ring-[#66835d]/20"
       />
     </label>

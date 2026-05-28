@@ -12,7 +12,6 @@ import {
   Move,
   RotateCcw,
   Sofa,
-  Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -365,13 +364,6 @@ export function EventLayoutPlanner({
     null,
   );
   const svgRef = React.useRef<SVGSVGElement | null>(null);
-
-  const selectedObjects = React.useMemo(
-    () => objects.filter((object) => selectedIds.includes(object.id)),
-    [objects, selectedIds],
-  );
-  const selectedObject =
-    selectedObjects.length === 1 ? selectedObjects[0] : null;
   const selectedIdSet = React.useMemo(
     () => new Set(selectedIds),
     [selectedIds],
@@ -691,17 +683,6 @@ export function EventLayoutPlanner({
     }
   };
 
-  const deleteSelected = () => {
-    if (selectedIds.length === 0) {
-      return;
-    }
-
-    setObjects((currentObjects) =>
-      currentObjects.filter((object) => !selectedIds.includes(object.id)),
-    );
-    setSelectedIds([]);
-  };
-
   const resetLayout = () => {
     setVenueLength(90);
     setVenueWidth(55);
@@ -807,7 +788,7 @@ export function EventLayoutPlanner({
 
   return (
     <main className="min-h-screen bg-[#f6f4ef] text-[#1f2520]">
-      <div className="mx-auto flex w-full max-w-[1540px] flex-col gap-4 px-4 py-4 lg:h-screen lg:flex-row lg:overflow-hidden">
+      <div className="mx-auto flex w-full max-w-[1540px] flex-col gap-4 px-4 py-4 lg:h-screen lg:flex-row lg:items-start lg:overflow-hidden">
         <aside className="flex flex-col gap-4 rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm lg:w-80 lg:overflow-auto">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6b715f]">
@@ -916,20 +897,11 @@ export function EventLayoutPlanner({
               Snapshot
             </Button>
           </div>
-
-          {onContinue ? (
-            <Button
-              type="button"
-              className="mt-2 w-full bg-[#111827] text-white hover:bg-[#0b1220]"
-              onClick={onContinue}
-              title="Continue to event details"
-            >
-              Continue
-            </Button>
-          ) : null}
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col gap-3 lg:overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col gap-3 lg:overflow-hidden">
+          <div className="flex gap-3 min-w-0 flex-1 lg:overflow-hidden">
+          <section className="flex min-w-0 flex-1 flex-col gap-3 lg:overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8d1c3] bg-white px-4 py-3 shadow-sm">
             <div className="flex items-center gap-2 text-sm font-medium text-[#4e594c]">
               <Move className="size-4" />
@@ -1054,10 +1026,23 @@ export function EventLayoutPlanner({
               />
             </svg>
           </div>
+
+          {onContinue ? (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                className="w-48 bg-[#111827] text-white hover:bg-[#0b1220]"
+                onClick={onContinue}
+                title="Continue to event details"
+              >
+                Continue
+              </Button>
+            </div>
+          ) : null}
         </section>
 
-        <aside className="flex flex-col gap-4 rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm lg:w-80 lg:overflow-auto">
-          <div className="flex items-start justify-between gap-3">
+        <aside className="flex flex-col gap-4 rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm lg:w-80 lg:self-stretch lg:overflow-auto">
+          {/* <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6b715f]">
                 Selection
@@ -1153,11 +1138,11 @@ export function EventLayoutPlanner({
             <div className="flex min-h-52 items-center justify-center rounded-lg border border-dashed border-[#d1c8b9] bg-[#fbfaf7] text-center text-sm text-[#777d73]">
               Select an object on the canvas.
             </div>
-          )}
+          )} */}
 
           <section className="space-y-2">
             <h3 className="text-sm font-semibold">Placed list</h3>
-            <div className="max-h-64 space-y-2 overflow-auto pr-1">
+            <div className="space-y-2">
               {objects.map((object, index) => (
                 <button
                   key={object.id}
@@ -1193,6 +1178,8 @@ export function EventLayoutPlanner({
             </div>
           </section>
         </aside>
+        </div>
+        </div>
       </div>
     </main>
   );
@@ -1232,28 +1219,6 @@ function NumberField({
           {suffix}
         </span>
       </span>
-    </label>
-  );
-}
-
-function TextField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="block space-y-1.5">
-      <span className="text-xs font-medium text-[#5c6659]">{label}</span>
-      <input
-        type="text"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-9 w-full rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] px-3 text-sm font-medium outline-none focus:border-[#66835d] focus:ring-2 focus:ring-[#66835d]/20"
-      />
     </label>
   );
 }
