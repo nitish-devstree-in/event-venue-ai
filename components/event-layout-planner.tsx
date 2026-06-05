@@ -2,48 +2,54 @@
 
 import * as React from "react";
 import {
-  Armchair,
   BadgeCheck,
-  Camera,
-  CircleDot,
   Download,
-  Fence,
-  Layers,
   Move,
   RotateCcw,
-  Sofa,
 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import {
+  EventProductsPanel,
+  type CanvasPlacement,
+  type EventProductsPanelHandle,
+} from "@/components/event-products-panel";
 
-type PlannerObjectKind =
-  | "chair"
-  | "stage"
-  | "sofa"
-  | "background"
-  | "mandap"
-  | "dining"
-  | "dance"
-  | "photo"
-  | "entry"
-  | "aisle"
-  | "dj"
-  | "decor";
+import { ProductMasterPanel } from "@/components/product-master-panel";
+import { Button } from "@/components/ui/button";
+import type { ProductMasterRecord } from "@/lib/api";
+import {
+  buildProductTemplateMap,
+  clampObjectSize,
+  getCatalogDimensions,
+  getResizeLimits,
+  normalizeProductCategory,
+  PLANNER_PRODUCT_DRAG_TYPE,
+  productFitsVenue,
+  type PlannerObjectKind,
+  type PlannerTemplate,
+} from "@/lib/product-master-planner";
+
+const CANVAS_VIEW_SIZE = 1000;
+
+function toDisplayX(valueFt: number, venueLengthFt: number) {
+  if (venueLengthFt <= 0) return 0;
+  return (valueFt / venueLengthFt) * CANVAS_VIEW_SIZE;
+}
+
+function toDisplayY(valueFt: number, venueWidthFt: number) {
+  if (venueWidthFt <= 0) return 0;
+  return (valueFt / venueWidthFt) * CANVAS_VIEW_SIZE;
+}
+
+function toFeetX(valueDisplay: number, venueLengthFt: number) {
+  return (valueDisplay / CANVAS_VIEW_SIZE) * venueLengthFt;
+}
+
+function toFeetY(valueDisplay: number, venueWidthFt: number) {
+  return (valueDisplay / CANVAS_VIEW_SIZE) * venueWidthFt;
+}
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
-
-type PlannerTemplate = {
-  kind: PlannerObjectKind;
-  label: string;
-  width: number;
-  height: number;
-  imageSrc?: string;
-  fill: string;
-  stroke: string;
-  accent: string;
-  icon: React.ComponentType<{ className?: string }>;
-};
 
 type PlannerObject = PlannerTemplate & {
   id: string;
@@ -51,6 +57,20 @@ type PlannerObject = PlannerTemplate & {
   y: number;
   rotation: number;
 };
+
+function objectToDisplay(
+  object: PlannerObject,
+  venueLength: number,
+  venueWidth: number,
+): PlannerObject {
+  return {
+    ...object,
+    x: toDisplayX(object.x, venueLength),
+    y: toDisplayY(object.y, venueWidth),
+    width: toDisplayX(object.width, venueLength),
+    height: toDisplayY(object.height, venueWidth),
+  };
+}
 
 type MoveState = {
   type: "move";
@@ -84,6 +104,7 @@ export type EventLayoutPlannerPlan = {
   objects: Array<{
     id: string;
     kind: PlannerObjectKind;
+    productMasterId: number;
     label: string;
     x: number;
     y: number;
@@ -92,190 +113,6 @@ export type EventLayoutPlannerPlan = {
     rotation: number;
   }>;
 };
-
-const templates: PlannerTemplate[] = [
-  {
-    kind: "chair",
-    label: "Guest chair",
-    width: 4,
-    height: 4,
-    imageSrc: "/guest-chair.jpg",
-    fill: "#f8d98b",
-    stroke: "#a86e11",
-    accent: "#fff4d1",
-    icon: Armchair,
-  },
-  {
-    kind: "stage",
-    label: "Wedding stage",
-    width: 28,
-    height: 12,
-    imageSrc: "/wedding-stage.jpeg",
-    fill: "#d9ead7",
-    stroke: "#4d7c58",
-    accent: "#f6fbf3",
-    icon: Layers,
-  },
-  {
-    kind: "sofa",
-    label: "Couple sofa",
-    width: 14,
-    height: 6,
-    imageSrc: "/couple-sofa.jpeg",
-    fill: "#f4b6c2",
-    stroke: "#b23a5a",
-    accent: "#ffe7ec",
-    icon: Sofa,
-  },
-  {
-    kind: "background",
-    label: "Floral backdrop",
-    width: 30,
-    height: 5,
-    imageSrc: "/floral-backdrop.jpg",
-    fill: "#bcd7f6",
-    stroke: "#366da8",
-    accent: "#edf6ff",
-    icon: Camera,
-  },
-  // {
-  //   kind: "mandap",
-  //   label: "Mandap",
-  //   width: 16,
-  //   height: 16,
-  //   fill: "#f4dfc1",
-  //   stroke: "#9b6237",
-  //   accent: "#fff7e9",
-  //   icon: Sparkles,
-  // },
-  // {
-  //   kind: "dining",
-  //   label: "Dining table",
-  //   width: 12,
-  //   height: 6,
-  //   fill: "#c7e7e1",
-  //   stroke: "#24756d",
-  //   accent: "#edfffb",
-  //   icon: Utensils,
-  // },
-  // {
-  //   kind: "dance",
-  //   label: "Dance floor",
-  //   width: 18,
-  //   height: 14,
-  //   fill: "#ddd2ff",
-  //   stroke: "#6a56a4",
-  //   accent: "#f4f0ff",
-  //   icon: Grid3X3,
-  // },
-  // {
-  //   kind: "photo",
-  //   label: "Photo booth",
-  //   width: 10,
-  //   height: 8,
-  //   fill: "#ffc9a8",
-  //   stroke: "#b45b2f",
-  //   accent: "#fff0e7",
-  //   icon: Camera,
-  // },
-  // {
-  //   kind: "entry",
-  //   label: "Entry gate",
-  //   width: 12,
-  //   height: 4,
-  //   fill: "#cbd5e1",
-  //   stroke: "#475569",
-  //   accent: "#f8fafc",
-  //   icon: DoorOpen,
-  // },
-  {
-    kind: "aisle",
-    label: "Aisle runner",
-    width: 8,
-    height: 28,
-    imageSrc: "/aisle-runner.jpg",
-    fill: "#fee2e2",
-    stroke: "#b91c1c",
-    accent: "#fff7f7",
-    icon: Fence,
-  },
-  // {
-  //   kind: "dj",
-  //   label: "DJ console",
-  //   width: 12,
-  //   height: 5,
-  //   fill: "#d1d5db",
-  //   stroke: "#374151",
-  //   accent: "#f9fafb",
-  //   icon: Music,
-  // },
-  // {
-  //   kind: "decor",
-  //   label: "Decor island",
-  //   width: 7,
-  //   height: 7,
-  //   fill: "#dcfce7",
-  //   stroke: "#15803d",
-  //   accent: "#f0fdf4",
-  //   icon: Flower2,
-  // },
-];
-
-const templateByKind = new Map(
-  templates.map((template) => [template.kind, template]),
-);
-
-const defaultObjects: PlannerObject[] = [
-  {
-    ...templates[1],
-    id: "stage-1",
-    x: 36,
-    y: 6,
-    rotation: 0,
-  },
-  {
-    ...templates[3],
-    id: "background-1",
-    x: 35,
-    y: 1,
-    rotation: 0,
-  },
-  {
-    ...templates[2],
-    id: "sofa-1",
-    x: 43,
-    y: 10,
-    rotation: 0,
-  },
-  {
-    ...templates[0],
-    id: "chair-1",
-    x: 32,
-    y: 30,
-    rotation: 0,
-  },
-  {
-    ...templates[0],
-    id: "chair-2",
-    x: 39,
-    y: 30,
-    rotation: 0,
-  },
-  {
-    ...templates[0],
-    id: "chair-3",
-    x: 46,
-    y: 30,
-    rotation: 0,
-  },
-  {
-    ...templates[0],
-    id: "chair-4",
-    x: 53,
-    y: 30,
-    rotation: 0,
-  },
-];
 
 const resizeHandles: Array<{
   handle: ResizeHandle;
@@ -336,8 +173,8 @@ const resizeHandles: Array<{
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
-const makeId = (kind: PlannerObjectKind) =>
-  `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+const makeObjectId = (productMasterId: number) =>
+  `pm-${productMasterId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
 const objectsOverlap = (first: PlannerObject, second: PlannerObject) =>
   first.x < second.x + second.width &&
@@ -347,23 +184,68 @@ const objectsOverlap = (first: PlannerObject, second: PlannerObject) =>
 
 const formatNumber = (value: number) => Number(value.toFixed(1));
 
+function getGridPosition(
+  index: number,
+  objectWidth: number,
+  objectHeight: number,
+  venueLength: number,
+  venueWidth: number,
+): Point {
+  const gap = 1;
+  const cols = Math.max(
+    1,
+    Math.floor((venueLength - gap) / (objectWidth + gap)),
+  );
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+
+  return {
+    x: clamp(
+      gap + col * (objectWidth + gap),
+      0,
+      Math.max(0, venueLength - objectWidth),
+    ),
+    y: clamp(
+      gap + row * (objectHeight + gap),
+      0,
+      Math.max(0, venueWidth - objectHeight),
+    ),
+  };
+}
+
 export function EventLayoutPlanner({
+  eventId,
   onPlanChange,
   onContinue,
+  initialVenueLength = 90,
+  initialVenueWidth = 55,
+  initialPlanObjects,
 }: {
+  eventId: number;
   onPlanChange?: (plan: EventLayoutPlannerPlan) => void;
   onContinue?: () => void;
+  initialVenueLength?: number;
+  initialVenueWidth?: number;
+  initialPlanObjects?: EventLayoutPlannerPlan["objects"];
 }) {
-  const [venueLength, setVenueLength] = React.useState(90);
-  const [venueWidth, setVenueWidth] = React.useState(55);
-  const [objects, setObjects] = React.useState<PlannerObject[]>(defaultObjects);
-  const [selectedIds, setSelectedIds] = React.useState<string[]>([
-    defaultObjects[0].id,
-  ]);
+  const [venueLength, setVenueLength] = React.useState(initialVenueLength);
+  const [venueWidth, setVenueWidth] = React.useState(initialVenueWidth);
+  const [products, setProducts] = React.useState<ProductMasterRecord[]>([]);
+  const productTemplateMap = React.useMemo(
+    () => buildProductTemplateMap(products),
+    [products],
+  );
+  const [objects, setObjects] = React.useState<PlannerObject[]>([]);
+  const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   const [interaction, setInteraction] = React.useState<InteractionState | null>(
     null,
   );
+  const [placementError, setPlacementError] = React.useState<string | null>(
+    null,
+  );
   const svgRef = React.useRef<SVGSVGElement | null>(null);
+  const eventProductsRef = React.useRef<EventProductsPanelHandle | null>(null);
+  const restoredPlanRef = React.useRef(false);
   const selectedIdSet = React.useMemo(
     () => new Set(selectedIds),
     [selectedIds],
@@ -384,15 +266,50 @@ export function EventLayoutPlanner({
     return ids;
   }, [objects]);
 
-  const gridLines = React.useMemo(() => {
-    const lines: Array<{ axis: "x" | "y"; value: number }> = [];
+  const canvasPlacements = React.useMemo<CanvasPlacement[]>(
+    () =>
+      objects.map((object) => ({
+        id: object.id,
+        productMasterId: object.productMasterId,
+        label: object.label,
+        width: object.width,
+        height: object.height,
+        x: object.x,
+        y: object.y,
+      })),
+    [objects],
+  );
 
-    for (let x = 0; x <= venueLength; x += 5) {
-      lines.push({ axis: "x", value: x });
+  const removeObjectsByMasterId = React.useCallback((productMasterId: number) => {
+    setObjects((currentObjects) => {
+      const remaining = currentObjects.filter(
+        (object) => object.productMasterId !== productMasterId,
+      );
+      setSelectedIds((currentIds) =>
+        currentIds.filter((id) => remaining.some((object) => object.id === id)),
+      );
+      return remaining;
+    });
+  }, []);
+
+  const gridLines = React.useMemo(() => {
+    const lines: Array<{ axis: "x" | "y"; value: number; major: boolean }> = [];
+    const gridStepFt = Math.min(venueLength, venueWidth) <= 20 ? 2 : 5;
+
+    for (let x = 0; x <= venueLength; x += gridStepFt) {
+      lines.push({
+        axis: "x",
+        value: toDisplayX(x, venueLength),
+        major: x % 10 === 0,
+      });
     }
 
-    for (let y = 0; y <= venueWidth; y += 5) {
-      lines.push({ axis: "y", value: y });
+    for (let y = 0; y <= venueWidth; y += gridStepFt) {
+      lines.push({
+        axis: "y",
+        value: toDisplayY(y, venueWidth),
+        major: y % 10 === 0,
+      });
     }
 
     return lines;
@@ -400,6 +317,25 @@ export function EventLayoutPlanner({
 
   const snapshotHeight = venueWidth + 16 + objects.length * 4.5;
   const venueAreaSqFt = venueLength * venueWidth;
+
+  const resolveObjectDimensions = React.useCallback(
+    (template: PlannerTemplate) =>
+      getCatalogDimensions(template.category, template.label),
+    [],
+  );
+
+  const getLimitsForTemplate = React.useCallback(
+    (template: PlannerTemplate) =>
+      getResizeLimits(
+        template.category,
+        template.label,
+        venueLength,
+        venueWidth,
+      ),
+    [venueLength, venueWidth],
+  );
+
+  const venueTooSmallForCatalog = venueLength < 16 || venueWidth < 16;
 
   React.useEffect(() => {
     if (!onPlanChange) return;
@@ -412,6 +348,7 @@ export function EventLayoutPlanner({
       objects: objects.map((object) => ({
         id: object.id,
         kind: object.kind,
+        productMasterId: object.productMasterId,
         label: object.label,
         x: formatNumber(object.x),
         y: formatNumber(object.y),
@@ -421,6 +358,58 @@ export function EventLayoutPlanner({
       })),
     });
   }, [objects, onPlanChange, venueAreaSqFt, venueLength, venueWidth]);
+
+  React.useEffect(() => {
+    if (
+      restoredPlanRef.current ||
+      !initialPlanObjects?.length ||
+      productTemplateMap.size === 0
+    ) {
+      return;
+    }
+
+    restoredPlanRef.current = true;
+    setObjects(
+      initialPlanObjects.flatMap((savedObject) => {
+        const template = productTemplateMap.get(savedObject.productMasterId);
+        if (!template) return [];
+
+        const fixed = resolveObjectDimensions(template);
+        const limits = getLimitsForTemplate(template);
+        const size = clampObjectSize(
+          savedObject.width,
+          savedObject.height,
+          limits,
+        );
+
+        return [
+          {
+            ...template,
+            ...size,
+            id: savedObject.id,
+            x: clamp(
+              savedObject.x,
+              0,
+              Math.max(0, venueLength - size.width),
+            ),
+            y: clamp(
+              savedObject.y,
+              0,
+              Math.max(0, venueWidth - size.height),
+            ),
+            rotation: savedObject.rotation,
+          },
+        ];
+      }),
+    );
+  }, [
+    initialPlanObjects,
+    productTemplateMap,
+    getLimitsForTemplate,
+    resolveObjectDimensions,
+    venueLength,
+    venueWidth,
+  ]);
 
   const getPointInVenue = React.useCallback(
     (clientX: number, clientY: number) => {
@@ -443,41 +432,151 @@ export function EventLayoutPlanner({
       const transformed = point.matrixTransform(matrix.inverse());
 
       return {
-        x: clamp(transformed.x, 0, venueLength),
-        y: clamp(transformed.y, 0, venueWidth),
+        x: clamp(toFeetX(transformed.x, venueLength), 0, venueLength),
+        y: clamp(toFeetY(transformed.y, venueWidth), 0, venueWidth),
       };
     },
     [venueLength, venueWidth],
   );
 
-  const addObject = React.useCallback(
-    (kind: PlannerObjectKind, position?: Point) => {
-      const template = templateByKind.get(kind);
+  const addProductObject = React.useCallback(
+    (productMasterId: number, position?: Point): PlannerObject | null => {
+      const template = productTemplateMap.get(productMasterId);
 
       if (!template) {
-        return;
+        return null;
+      }
+
+      const catalog = resolveObjectDimensions(template);
+
+      if (!productFitsVenue(catalog.width, catalog.height, venueLength, venueWidth)) {
+        setPlacementError(
+          `${template.label} is ${catalog.width}×${catalog.height} ft — larger than this venue. Use the corner handles to resize it after placing.`,
+        );
+      } else {
+        setPlacementError(null);
       }
 
       const nextObject: PlannerObject = {
         ...template,
-        id: makeId(kind),
+        ...catalog,
+        id: makeObjectId(productMasterId),
         x: clamp(
-          position?.x ?? venueLength / 2 - template.width / 2,
+          position?.x ?? venueLength / 2 - catalog.width / 2,
           0,
-          Math.max(0, venueLength - template.width),
+          Math.max(0, venueLength - catalog.width),
         ),
         y: clamp(
-          position?.y ?? venueWidth / 2 - template.height / 2,
+          position?.y ?? venueWidth / 2 - catalog.height / 2,
           0,
-          Math.max(0, venueWidth - template.height),
+          Math.max(0, venueWidth - catalog.height),
         ),
         rotation: 0,
       };
 
       setObjects((currentObjects) => [...currentObjects, nextObject]);
       setSelectedIds([nextObject.id]);
+      return nextObject;
     },
-    [venueLength, venueWidth],
+    [productTemplateMap, resolveObjectDimensions, venueLength, venueWidth],
+  );
+
+  const placeProduct = React.useCallback(
+    async (
+      productMasterId: number,
+      position?: Point,
+      options?: { syncToEvent?: boolean },
+    ) => {
+      const placed = addProductObject(productMasterId, position);
+      if (!placed || options?.syncToEvent === false) return;
+
+      try {
+        await eventProductsRef.current?.addProductFromCanvas(productMasterId, {
+          x: placed.x,
+          y: placed.y,
+          width: placed.width,
+          height: placed.height,
+        });
+      } catch {
+        // Error state is shown in the event products panel.
+      }
+    },
+    [addProductObject],
+  );
+
+  const placeProductsForQuantity = React.useCallback(
+    (
+      productMasterId: number,
+      targetQuantity: number,
+      options?: { syncToEvent?: boolean },
+    ) => {
+      const template = productTemplateMap.get(productMasterId);
+      if (!template) return;
+
+      const catalog = resolveObjectDimensions(template);
+      const currentCount = objects.filter(
+        (object) => object.productMasterId === productMasterId,
+      ).length;
+      const toPlace = Math.max(0, targetQuantity - currentCount);
+
+      if (toPlace === 0) {
+        setPlacementError(
+          `All ${targetQuantity} ${template.label} items are already on the canvas.`,
+        );
+        return;
+      }
+
+      if (
+        !productFitsVenue(catalog.width, catalog.height, venueLength, venueWidth)
+      ) {
+        setPlacementError(
+          `${template.label} is ${catalog.width}×${catalog.height} ft — larger than this venue. Use the corner handles to resize after placing.`,
+        );
+      } else {
+        setPlacementError(null);
+      }
+
+      const newObjects: PlannerObject[] = Array.from({ length: toPlace }, (_, i) => {
+        const index = currentCount + i;
+        const position = getGridPosition(
+          index,
+          catalog.width,
+          catalog.height,
+          venueLength,
+          venueWidth,
+        );
+
+        return {
+          ...template,
+          ...catalog,
+          id: makeObjectId(productMasterId),
+          x: position.x,
+          y: position.y,
+          rotation: 0,
+        };
+      });
+
+      setObjects((currentObjects) => [...currentObjects, ...newObjects]);
+      setSelectedIds(newObjects.map((object) => object.id));
+
+      if (options?.syncToEvent === false) return;
+
+      void (async () => {
+        for (const object of newObjects) {
+          try {
+            await eventProductsRef.current?.addProductFromCanvas(productMasterId, {
+              x: object.x,
+              y: object.y,
+              width: object.width,
+              height: object.height,
+            });
+          } catch {
+            break;
+          }
+        }
+      })();
+    },
+    [objects, productTemplateMap, resolveObjectDimensions, venueLength, venueWidth],
   );
 
   const updateObject = React.useCallback(
@@ -488,12 +587,30 @@ export function EventLayoutPlanner({
             return object;
           }
 
-          const nextObject = { ...object, ...patch };
+          const template = productTemplateMap.get(object.productMasterId);
+          const limits = template
+            ? getLimitsForTemplate(template)
+            : getResizeLimits(
+                object.category,
+                object.label,
+                venueLength,
+                venueWidth,
+              );
+          const size = clampObjectSize(
+            patch.width ?? object.width,
+            patch.height ?? object.height,
+            limits,
+          );
+
+          const nextObject = {
+            ...object,
+            ...patch,
+            ...size,
+            rotation: clamp(patch.rotation ?? object.rotation, 0, 355),
+          };
 
           return {
             ...nextObject,
-            width: clamp(nextObject.width, 2, venueLength),
-            height: clamp(nextObject.height, 2, venueWidth),
             x: clamp(
               nextObject.x,
               0,
@@ -504,35 +621,70 @@ export function EventLayoutPlanner({
               0,
               Math.max(0, venueWidth - nextObject.height),
             ),
-            rotation: clamp(nextObject.rotation, 0, 355),
           };
         }),
       );
     },
-    [venueLength, venueWidth],
+    [getLimitsForTemplate, productTemplateMap, venueLength, venueWidth],
   );
 
   const handleVenueLengthChange = (value: number) => {
-    const nextLength = clamp(value, 30, 180);
+    const nextLength = clamp(value, 5, 180);
     setVenueLength(nextLength);
     setObjects((currentObjects) =>
-      currentObjects.map((object) => ({
-        ...object,
-        width: Math.min(object.width, nextLength),
-        x: clamp(object.x, 0, Math.max(0, nextLength - object.width)),
-      })),
+      currentObjects.map((object) => {
+        const template = productTemplateMap.get(object.productMasterId);
+        const limits = template
+          ? getResizeLimits(
+              template.category,
+              template.label,
+              nextLength,
+              venueWidth,
+            )
+          : getResizeLimits(
+              object.category,
+              object.label,
+              nextLength,
+              venueWidth,
+            );
+        const size = clampObjectSize(object.width, object.height, limits);
+
+        return {
+          ...object,
+          ...size,
+          x: clamp(object.x, 0, Math.max(0, nextLength - size.width)),
+        };
+      }),
     );
   };
 
   const handleVenueWidthChange = (value: number) => {
-    const nextWidth = clamp(value, 20, 120);
+    const nextWidth = clamp(value, 5, 120);
     setVenueWidth(nextWidth);
     setObjects((currentObjects) =>
-      currentObjects.map((object) => ({
-        ...object,
-        height: Math.min(object.height, nextWidth),
-        y: clamp(object.y, 0, Math.max(0, nextWidth - object.height)),
-      })),
+      currentObjects.map((object) => {
+        const template = productTemplateMap.get(object.productMasterId);
+        const limits = template
+          ? getResizeLimits(
+              template.category,
+              template.label,
+              venueLength,
+              nextWidth,
+            )
+          : getResizeLimits(
+              object.category,
+              object.label,
+              venueLength,
+              nextWidth,
+            );
+        const size = clampObjectSize(object.width, object.height, limits);
+
+        return {
+          ...object,
+          ...size,
+          y: clamp(object.y, 0, Math.max(0, nextWidth - size.height)),
+        };
+      }),
     );
   };
 
@@ -664,16 +816,6 @@ export function EventLayoutPlanner({
       next.height = original.height - deltaY;
     }
 
-    if (next.width < 2) {
-      next.x = handle.includes("w") ? original.x + original.width - 2 : next.x;
-      next.width = 2;
-    }
-
-    if (next.height < 2) {
-      next.y = handle.includes("n") ? original.y + original.height - 2 : next.y;
-      next.height = 2;
-    }
-
     updateObject(interaction.id, next);
   };
 
@@ -684,10 +826,11 @@ export function EventLayoutPlanner({
   };
 
   const resetLayout = () => {
-    setVenueLength(90);
-    setVenueWidth(55);
-    setObjects(defaultObjects);
-    setSelectedIds([defaultObjects[0].id]);
+    setVenueLength(initialVenueLength);
+    setVenueWidth(initialVenueWidth);
+    setObjects([]);
+    setSelectedIds([]);
+    setPlacementError(null);
   };
 
   const resolveOverlaps = () => {
@@ -767,29 +910,32 @@ export function EventLayoutPlanner({
   };
 
   const handleCanvasDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    const kind = event.dataTransfer.getData(
-      "application/x-planner-object",
-    ) as PlannerObjectKind;
+    const productIdRaw = event.dataTransfer.getData(PLANNER_PRODUCT_DRAG_TYPE);
+    const productMasterId = Number(productIdRaw);
 
-    if (!kind) {
+    if (!productIdRaw || !Number.isFinite(productMasterId)) {
       return;
     }
 
     event.preventDefault();
 
     const point = getPointInVenue(event.clientX, event.clientY);
-    const template = templateByKind.get(kind);
+    const template = productTemplateMap.get(productMasterId);
+    const fixed = template
+      ? resolveObjectDimensions(template)
+      : { width: 0, height: 0 };
 
-    addObject(kind, {
-      x: point.x - (template?.width ?? 0) / 2,
-      y: point.y - (template?.height ?? 0) / 2,
+    void placeProduct(productMasterId, {
+      x: point.x - fixed.width / 2,
+      y: point.y - fixed.height / 2,
     });
   };
 
   return (
-    <main className="min-h-screen bg-[#f6f4ef] text-[#1f2520]">
-      <div className="mx-auto flex w-full max-w-[1540px] flex-col gap-4 px-4 py-4 lg:h-screen lg:flex-row lg:items-start lg:overflow-hidden">
-        <aside className="flex flex-col gap-4 rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm lg:w-80 lg:overflow-auto">
+    <main className="flex min-h-0 flex-1 flex-col text-[#1f2520]">
+      <div className="mx-auto grid w-full max-w-[1540px] flex-1 grid-cols-1 gap-4 px-4 pb-4 lg:min-h-0 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)_minmax(0,320px)] lg:overflow-hidden">
+        <aside className="flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6b715f]">
               Wedding Layout
@@ -808,7 +954,7 @@ export function EventLayoutPlanner({
             <NumberField
               label="Length"
               value={venueLength}
-              min={30}
+              min={5}
               max={180}
               suffix="ft"
               onChange={handleVenueLengthChange}
@@ -816,67 +962,34 @@ export function EventLayoutPlanner({
             <NumberField
               label="Width"
               value={venueWidth}
-              min={20}
+              min={5}
               max={120}
               suffix="ft"
               onChange={handleVenueWidthChange}
             />
+
+            {venueTooSmallForCatalog ? (
+              <div className="rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2 text-xs text-[#92400e]">
+                Small venue — place items then drag corner handles to resize
+                them down. Default sizes: chair 4×4 ft, sofa 14×6 ft, mandap
+                16×16 ft.
+              </div>
+            ) : null}
+
+            {placementError ? (
+              <div className="rounded-lg border border-[#f1c0c0] bg-[#fff5f5] px-3 py-2 text-xs text-[#9b1c1c]">
+                {placementError}
+              </div>
+            ) : null}
           </section>
 
-          <section className="space-y-3">
-            <h2 className="text-sm font-semibold">Objects</h2>
-            <div className="grid grid-cols-2 gap-2">
-              {templates.map((template) => {
-                const Icon = template.icon;
+          <ProductMasterPanel
+            onProductsChange={setProducts}
+            onAddToCanvas={(productId) => void placeProduct(productId)}
+          />
+          </div>
 
-                return (
-                  <button
-                    key={template.kind}
-                    type="button"
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.setData(
-                        "application/x-planner-object",
-                        template.kind,
-                      );
-                    }}
-                    onClick={() => addObject(template.kind)}
-                    className="flex min-h-24 flex-col items-start justify-between rounded-lg border border-[#ddd6c7] bg-[#fbfaf7] p-3 text-left transition hover:border-[#8ca17f] hover:bg-[#f4f8ef]"
-                    title={`Add ${template.label}`}
-                  >
-                    <span className="relative w-full overflow-hidden rounded-lg border border-[#e7e0d4] bg-white">
-                      <span className="block h-16 w-full bg-[#fbfaf7]">
-                        {template.imageSrc ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={template.imageSrc}
-                            alt={template.label}
-                            className="h-full w-full object-cover"
-                            loading="lazy"
-                            onError={(event) => {
-                              (event.currentTarget as HTMLImageElement).style.display =
-                                "none";
-                            }}
-                          />
-                        ) : null}
-                      </span>
-                      <span className="absolute left-2 top-2 flex size-7 items-center justify-center rounded-md bg-white/90 shadow-sm ring-1 ring-black/5">
-                        <Icon className="size-4 text-[#1f2520]" />
-                      </span>
-                    </span>
-                    <span className="text-sm font-semibold leading-tight">
-                      {template.label}
-                    </span>
-                    <span className="text-xs text-[#6f756a]">
-                      {template.width} x {template.height} ft
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          <div className="mt-auto flex gap-2">
+          <div className="flex shrink-0 gap-2 border-t border-[#ebe5da] pt-4">
             <Button
               type="button"
               variant="outline"
@@ -899,10 +1012,8 @@ export function EventLayoutPlanner({
           </div>
         </aside>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-3 lg:overflow-hidden">
-          <div className="flex gap-3 min-w-0 flex-1 lg:overflow-hidden">
-          <section className="flex min-w-0 flex-1 flex-col gap-3 lg:overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8d1c3] bg-white px-4 py-3 shadow-sm">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-[#d8d1c3] bg-white px-4 py-3 shadow-sm">
             <div className="flex items-center gap-2 text-sm font-medium text-[#4e594c]">
               <Move className="size-4" />
               <span>{objects.length} placed objects</span>
@@ -929,45 +1040,29 @@ export function EventLayoutPlanner({
           </div>
 
           <div
-            className="min-h-[360px] flex-1 overflow-auto rounded-lg border border-[#cfc6b6] bg-[#e9e3d6] p-3 shadow-inner"
+            className="relative min-h-[420px] w-full flex-1 overflow-hidden rounded-lg border border-[#cfc6b6] bg-[#fffdf8]"
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleCanvasDrop}
           >
             <svg
               ref={svgRef}
-              viewBox={`0 0 ${venueLength} ${venueWidth}`}
+              viewBox={`0 0 ${CANVAS_VIEW_SIZE} ${CANVAS_VIEW_SIZE}`}
+              width="100%"
+              height="100%"
+              preserveAspectRatio="none"
               role="img"
               aria-label="Wedding event layout canvas"
-              className="mx-auto block h-auto min-w-[760px] max-w-full rounded-md bg-[#fffdf8] shadow-sm"
-              style={{ aspectRatio: `${venueLength} / ${venueWidth}` }}
+              className="absolute inset-0 block h-full w-full touch-none select-none"
               onPointerMove={moveOrResizeObject}
               onPointerUp={finishInteraction}
               onPointerCancel={finishInteraction}
               onPointerDown={() => setSelectedIds([])}
             >
-              <defs>
-                <filter
-                  id="objectShadow"
-                  x="-20%"
-                  y="-20%"
-                  width="140%"
-                  height="140%"
-                >
-                  <feDropShadow
-                    dx="0.35"
-                    dy="0.45"
-                    stdDeviation="0.35"
-                    floodColor="#18201a"
-                    floodOpacity="0.18"
-                  />
-                </filter>
-              </defs>
-
               <rect
                 x="0"
                 y="0"
-                width={venueLength}
-                height={venueWidth}
+                width={CANVAS_VIEW_SIZE}
+                height={CANVAS_VIEW_SIZE}
                 fill="#fffdf8"
               />
 
@@ -978,31 +1073,31 @@ export function EventLayoutPlanner({
                     x1={line.value}
                     x2={line.value}
                     y1="0"
-                    y2={venueWidth}
-                    stroke={line.value % 10 === 0 ? "#ded6c7" : "#eee9df"}
-                    strokeWidth="0.12"
+                    y2={CANVAS_VIEW_SIZE}
+                    stroke={line.major ? "#ded6c7" : "#eee9df"}
+                    strokeWidth={line.major ? 1.2 : 0.8}
                   />
                 ) : (
                   <line
                     key={`y-${line.value}`}
                     x1="0"
-                    x2={venueLength}
+                    x2={CANVAS_VIEW_SIZE}
                     y1={line.value}
                     y2={line.value}
-                    stroke={line.value % 10 === 0 ? "#ded6c7" : "#eee9df"}
-                    strokeWidth="0.12"
+                    stroke={line.major ? "#ded6c7" : "#eee9df"}
+                    strokeWidth={line.major ? 1.2 : 0.8}
                   />
                 ),
               )}
 
               <rect
-                x="0.3"
-                y="0.3"
-                width={venueLength - 0.6}
-                height={venueWidth - 0.6}
+                x="4"
+                y="4"
+                width={CANVAS_VIEW_SIZE - 8}
+                height={CANVAS_VIEW_SIZE - 8}
                 fill="none"
-                stroke="#4a5446"
-                strokeWidth="0.6"
+                stroke="#cfc6b6"
+                strokeWidth="2"
               />
 
               {objects.map((object, index) => (
@@ -1010,6 +1105,8 @@ export function EventLayoutPlanner({
                   key={object.id}
                   object={object}
                   index={index + 1}
+                  venueLength={venueLength}
+                  venueWidth={venueWidth}
                   selected={selectedIdSet.has(object.id)}
                   overlapping={overlapIds.has(object.id)}
                   onPointerDown={startObjectMove}
@@ -1026,160 +1123,26 @@ export function EventLayoutPlanner({
               />
             </svg>
           </div>
-
-          {onContinue ? (
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                className="w-48 bg-[#111827] text-white hover:bg-[#0b1220]"
-                onClick={onContinue}
-                title="Continue to event details"
-              >
-                Continue
-              </Button>
-            </div>
-          ) : null}
         </section>
 
-        <aside className="flex flex-col gap-4 rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm lg:w-80 lg:self-stretch lg:overflow-auto">
-          {/* <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6b715f]">
-                Selection
-              </p>
-              <h2 className="mt-2 text-xl font-semibold">
-                {selectedObject
-                  ? selectedObject.label
-                  : selectedObjects.length > 1
-                    ? `${selectedObjects.length} objects selected`
-                    : "No object selected"}
-              </h2>
-            </div>
-            <Button
-              type="button"
-              variant="destructive"
-              size="icon"
-              onClick={deleteSelected}
-              disabled={selectedIds.length === 0}
-              title="Delete selected objects"
-            >
-              <Trash2 />
-            </Button>
-          </div>
-
-          {selectedObject ? (
-            <section className="space-y-3">
-              <TextField
-                label="Label"
-                value={selectedObject.label}
-                onChange={(value) =>
-                  updateObject(selectedObject.id, { label: value })
-                }
-              />
-              <NumberField
-                label="Object length"
-                value={selectedObject.width}
-                min={2}
-                max={venueLength}
-                suffix="ft"
-                onChange={(value) =>
-                  updateObject(selectedObject.id, { width: value })
-                }
-              />
-              <NumberField
-                label="Object width"
-                value={selectedObject.height}
-                min={2}
-                max={venueWidth}
-                suffix="ft"
-                onChange={(value) =>
-                  updateObject(selectedObject.id, { height: value })
-                }
-              />
-              <NumberField
-                label="X position"
-                value={formatNumber(selectedObject.x)}
-                min={0}
-                max={venueLength - selectedObject.width}
-                suffix="ft"
-                onChange={(value) =>
-                  updateObject(selectedObject.id, { x: value })
-                }
-              />
-              <NumberField
-                label="Y position"
-                value={formatNumber(selectedObject.y)}
-                min={0}
-                max={venueWidth - selectedObject.height}
-                suffix="ft"
-                onChange={(value) =>
-                  updateObject(selectedObject.id, { y: value })
-                }
-              />
-              <NumberField
-                label="Rotation"
-                value={selectedObject.rotation}
-                min={0}
-                max={355}
-                step={5}
-                suffix="deg"
-                onChange={(value) =>
-                  updateObject(selectedObject.id, { rotation: value })
-                }
-              />
-            </section>
-          ) : selectedObjects.length > 1 ? (
-            <div className="rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] p-3 text-sm text-[#596153]">
-              Drag any selected object to move the group. Use the placed list or
-              Shift/Ctrl click on the canvas to add or remove objects from the
-              selection.
-            </div>
-          ) : (
-            <div className="flex min-h-52 items-center justify-center rounded-lg border border-dashed border-[#d1c8b9] bg-[#fbfaf7] text-center text-sm text-[#777d73]">
-              Select an object on the canvas.
-            </div>
-          )} */}
-
-          <section className="space-y-2">
-            <h3 className="text-sm font-semibold">Placed list</h3>
-            <div className="space-y-2">
-              {objects.map((object, index) => (
-                <button
-                  key={object.id}
-                  type="button"
-                  className={cn(
-                    "flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-sm transition",
-                    selectedIdSet.has(object.id)
-                      ? "border-[#315c4b] bg-[#eef5ec]"
-                      : overlapIds.has(object.id)
-                        ? "border-[#b91c1c] bg-[#fff7f7]"
-                        : "border-[#ddd6c7] bg-[#fbfaf7] hover:bg-[#f4f8ef]",
-                  )}
-                  onClick={(event) =>
-                    selectObject(
-                      object.id,
-                      event.shiftKey || event.metaKey || event.ctrlKey,
-                    )
-                  }
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[#315c4b] text-[10px] font-bold text-white">
-                      {index + 1}
-                    </span>
-                    <span className="min-w-0 truncate font-medium">
-                      {object.label}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-xs text-[#6f756a]">
-                    {object.width} x {object.height}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </section>
+        <aside className="flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm">
+          <EventProductsPanel
+            ref={eventProductsRef}
+            eventId={eventId}
+            canvasPlacements={canvasPlacements}
+            selectedCanvasIds={selectedIds}
+            productCatalog={products}
+            venueAreaSqFt={venueAreaSqFt}
+            onSelectCanvas={selectObject}
+            onPlaceOnCanvas={(productId, quantity) =>
+              placeProductsForQuantity(productId, quantity, {
+                syncToEvent: false,
+              })
+            }
+            onRemoveFromCanvas={removeObjectsByMasterId}
+            onContinue={onContinue}
+          />
         </aside>
-        </div>
-        </div>
       </div>
     </main>
   );
@@ -1226,6 +1189,8 @@ function NumberField({
 function PlannerShape({
   object,
   index,
+  venueLength,
+  venueWidth,
   selected,
   overlapping,
   onPointerDown,
@@ -1233,6 +1198,8 @@ function PlannerShape({
 }: {
   object: PlannerObject;
   index: number;
+  venueLength: number;
+  venueWidth: number;
   selected: boolean;
   overlapping: boolean;
   onPointerDown: (
@@ -1245,55 +1212,54 @@ function PlannerShape({
     handle: ResizeHandle,
   ) => void;
 }) {
-  const centerX = object.x + object.width / 2;
-  const centerY = object.y + object.height / 2;
-  const labelSize = clamp(
-    Math.min(object.width, object.height) * 0.22,
-    1.25,
-    2.4,
-  );
-  const dimensionSize = clamp(
-    Math.min(object.width, object.height) * 0.16,
-    0.95,
-    1.4,
-  );
+  const display = objectToDisplay(object, venueLength, venueWidth);
+  const centerX = display.x + display.width / 2;
+  const centerY = display.y + display.height / 2;
+  const uiUnit = CANVAS_VIEW_SIZE / 100;
+  const badgeRadius = Math.max(3.5, uiUnit * 1.4);
+  const badgeOffset = badgeRadius + uiUnit * 0.35;
+  const labelSize = Math.max(7.5, uiUnit * 2.8);
+  const dimensionSize = Math.max(6, uiUnit * 2.1);
+  const selectionPadding = Math.max(2.5, uiUnit * 0.8);
+  const selectionStroke = Math.max(1.2, uiUnit * 0.18);
+  const handleRadius = Math.max(2.2, uiUnit * 1.1);
+  const handleStroke = Math.max(0.8, uiUnit * 0.14);
 
   return (
     <g
       transform={`rotate(${object.rotation} ${centerX} ${centerY})`}
       onPointerDown={(event) => onPointerDown(event, object)}
       className="cursor-grab active:cursor-grabbing"
-      filter="url(#objectShadow)"
     >
       <rect
-        x={object.x}
-        y={object.y}
-        width={object.width}
-        height={object.height}
-        rx={Math.min(1.2, object.width / 6, object.height / 6)}
+        x={display.x}
+        y={display.y}
+        width={display.width}
+        height={display.height}
+        rx={Math.min(8, display.width / 8, display.height / 8)}
         fill={object.fill}
         fillOpacity={overlapping ? 0.78 : 0.95}
         stroke={selected ? "#111827" : overlapping ? "#b91c1c" : object.stroke}
-        strokeWidth={selected ? 0.7 : overlapping ? 0.65 : 0.45}
+        strokeWidth={selected ? selectionStroke * 1.2 : overlapping ? selectionStroke : selectionStroke * 0.8}
       />
 
-      <ObjectIllustration object={object} />
+      <ObjectIllustration object={display} />
 
       <circle
-        cx={object.x + 1.45}
-        cy={object.y + 1.45}
-        r="1.2"
+        cx={display.x + badgeOffset}
+        cy={display.y + badgeOffset}
+        r={badgeRadius}
         fill="#1f2937"
         stroke="#fffdf8"
-        strokeWidth="0.25"
+        strokeWidth={Math.max(0.8, uiUnit * 0.12)}
       />
       <text
-        x={object.x + 1.45}
-        y={object.y + 1.45}
+        x={display.x + badgeOffset}
+        y={display.y + badgeOffset}
         textAnchor="middle"
         dominantBaseline="central"
         fontFamily="Arial, sans-serif"
-        fontSize="1.3"
+        fontSize={Math.max(0.65, badgeRadius * 1.05)}
         fontWeight="700"
         fill="#ffffff"
       >
@@ -1302,7 +1268,7 @@ function PlannerShape({
 
       <text
         x={centerX}
-        y={centerY - 0.7}
+        y={centerY - uiUnit * 0.9}
         textAnchor="middle"
         dominantBaseline="central"
         fontFamily="Arial, sans-serif"
@@ -1311,14 +1277,14 @@ function PlannerShape({
         fill="#1f2520"
         paintOrder="stroke"
         stroke="#fffdf8"
-        strokeWidth="0.38"
+        strokeWidth={Math.max(0.08, uiUnit * 0.16)}
       >
         {object.label}
       </text>
 
       <text
         x={centerX}
-        y={centerY + 1.25}
+        y={centerY + uiUnit * 1.1}
         textAnchor="middle"
         dominantBaseline="central"
         fontFamily="Arial, sans-serif"
@@ -1327,7 +1293,7 @@ function PlannerShape({
         fill="#374151"
         paintOrder="stroke"
         stroke="#fffdf8"
-        strokeWidth="0.28"
+        strokeWidth={Math.max(0.06, uiUnit * 0.12)}
       >
         {formatNumber(object.width)} x {formatNumber(object.height)} ft
       </text>
@@ -1335,16 +1301,16 @@ function PlannerShape({
       {overlapping ? (
         <text
           x={centerX}
-          y={object.y - 1.2}
+          y={display.y - uiUnit * 1.2}
           textAnchor="middle"
           dominantBaseline="central"
           fontFamily="Arial, sans-serif"
-          fontSize="1.25"
+          fontSize={Math.max(0.7, uiUnit * 2.2)}
           fontWeight="700"
           fill="#b91c1c"
           paintOrder="stroke"
           stroke="#fffdf8"
-          strokeWidth="0.3"
+          strokeWidth={Math.max(0.06, uiUnit * 0.12)}
         >
           overlap
         </text>
@@ -1353,28 +1319,29 @@ function PlannerShape({
       {selected ? (
         <g data-editor-only="true">
           <rect
-            x={object.x - 0.8}
-            y={object.y - 0.8}
-            width={object.width + 1.6}
-            height={object.height + 1.6}
-            rx="1.2"
+            x={display.x - selectionPadding}
+            y={display.y - selectionPadding}
+            width={display.width + selectionPadding * 2}
+            height={display.height + selectionPadding * 2}
+            rx={Math.max(4, uiUnit * 0.8)}
             fill="none"
             stroke="#111827"
-            strokeDasharray="1.5 1.2"
-            strokeWidth="0.35"
+            strokeDasharray={`${uiUnit * 1.5} ${uiUnit * 1.1}`}
+            strokeWidth={selectionStroke}
+            pointerEvents="none"
           />
           {resizeHandles.map((item) => {
-            const point = item.getPoint(object);
+            const point = item.getPoint(display);
 
             return (
               <circle
                 key={item.handle}
                 cx={point.x}
                 cy={point.y}
-                r="0.85"
+                r={handleRadius}
                 fill="#ffffff"
                 stroke="#111827"
-                strokeWidth="0.32"
+                strokeWidth={handleStroke}
                 style={{ cursor: item.cursor }}
                 onPointerDown={(event) =>
                   onResizeStart(event, object, item.handle)
@@ -1389,7 +1356,18 @@ function PlannerShape({
 }
 
 function ObjectIllustration({ object }: { object: PlannerObject }) {
-  if (object.kind === "chair") {
+  const category = normalizeProductCategory(object.category) ?? "";
+  const nameLower = object.label.toLowerCase();
+  const resolvedCategory =
+    nameLower.includes("sofa")
+      ? "sofa"
+      : nameLower.includes("mandap")
+        ? "mandap"
+        : nameLower.includes("chair") || nameLower.includes("seat")
+          ? "seating"
+          : category;
+
+  if (resolvedCategory === "seating") {
     return (
       <>
         <rect
@@ -1414,36 +1392,39 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
     );
   }
 
-  if (object.kind === "stage" || object.kind === "dance") {
+  if (resolvedCategory === "stage" || resolvedCategory === "dance") {
+    const pad = Math.min(object.width, object.height) * 0.06;
+
     return (
       <>
         <rect
-          x={object.x + 1.2}
-          y={object.y + 1.2}
-          width={Math.max(0, object.width - 2.4)}
-          height={Math.max(0, object.height - 2.4)}
-          rx="0.9"
+          x={object.x + pad}
+          y={object.y + pad}
+          width={Math.max(0, object.width - pad * 2)}
+          height={Math.max(0, object.height - pad * 2)}
+          rx={pad * 0.75}
           fill={object.accent}
           opacity="0.75"
         />
         <path
-          d={`M ${object.x + 2} ${object.y + object.height - 2} C ${
+          d={`M ${object.x + pad * 1.5} ${object.y + object.height - pad} C ${
             object.x + object.width / 2
-          } ${object.y + object.height + 1.4} ${object.x + object.width - 2} ${
-            object.y + object.height - 2
+          } ${object.y + object.height + pad * 0.8} ${object.x + object.width - pad * 1.5} ${
+            object.y + object.height - pad
           }`}
           fill="none"
           stroke={object.stroke}
-          strokeWidth="0.35"
+          strokeWidth={Math.max(0.35, pad * 0.12)}
         />
       </>
     );
   }
 
   if (
-    object.kind === "sofa" ||
-    object.kind === "dining" ||
-    object.kind === "dj"
+    resolvedCategory === "sofa" ||
+    resolvedCategory === "furniture" ||
+    resolvedCategory === "dining" ||
+    resolvedCategory === "dj"
   ) {
     return (
       <>
@@ -1470,17 +1451,19 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
   }
 
   if (
-    object.kind === "background" ||
-    object.kind === "decor" ||
-    object.kind === "mandap"
+    resolvedCategory === "backdrop" ||
+    resolvedCategory === "background" ||
+    resolvedCategory === "decor" ||
+    resolvedCategory === "mandap"
   ) {
+    const dotCount = resolvedCategory === "mandap" ? 10 : 7;
+
     return (
       <>
-        {Array.from({ length: object.kind === "mandap" ? 10 : 7 }).map(
-          (_, index) => {
+        {Array.from({ length: dotCount }).map((_, index) => {
             const cx =
               object.x +
-              ((index + 0.7) / (object.kind === "mandap" ? 10.4 : 7.4)) *
+              ((index + 0.7) / (resolvedCategory === "mandap" ? 10.4 : 7.4)) *
                 object.width;
             const cy =
               object.y + object.height * (index % 2 === 0 ? 0.32 : 0.68);
@@ -1502,30 +1485,43 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
     );
   }
 
-  if (object.kind === "aisle") {
+  if (resolvedCategory === "aisle") {
+    const pad = Math.min(object.width, object.height) * 0.08;
+
     return (
       <>
         <line
           x1={object.x + object.width / 2}
           x2={object.x + object.width / 2}
-          y1={object.y + 1}
-          y2={object.y + object.height - 1}
+          y1={object.y + pad}
+          y2={object.y + object.height - pad}
           stroke={object.stroke}
-          strokeDasharray="1 1"
-          strokeWidth="0.35"
+          strokeDasharray={`${pad * 0.8} ${pad * 0.8}`}
+          strokeWidth={Math.max(0.35, pad * 0.12)}
         />
-        <CircleDot
-          x={object.x + object.width / 2 - 1}
-          y={object.y + object.height / 2 - 1}
-          width="2"
-          height="2"
-          color={object.stroke}
+        <circle
+          cx={object.x + object.width / 2}
+          cy={object.y + object.height / 2}
+          r={Math.max(0.8, pad * 0.35)}
+          fill={object.stroke}
         />
       </>
     );
   }
 
-  return null;
+  return (
+    <rect
+      x={object.x + object.width * 0.12}
+      y={object.y + object.height * 0.12}
+      width={object.width * 0.76}
+      height={object.height * 0.76}
+      rx="0.6"
+      fill={object.accent}
+      stroke={object.stroke}
+      strokeWidth="0.25"
+      opacity="0.85"
+    />
+  );
 }
 
 function SnapshotLegend({
