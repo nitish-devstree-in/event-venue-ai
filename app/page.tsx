@@ -18,6 +18,7 @@ import {
 import {
   applyFullEventState,
   normalizeVenue,
+  resolveEventPlan,
 } from "@/lib/event-restore";
 import {
   clearAppSession,
@@ -71,13 +72,14 @@ export default function Home() {
         try {
           const fullEvent = await getEvent(saved.eventId);
           const restored = applyFullEventState(fullEvent);
+          const resolvedPlan = resolveEventPlan(fullEvent, saved.plan);
 
           if (!cancelled) {
             setSelectedEvent(restored.event);
             setEventDetails(restored.eventDetails);
             setVenueSession(restored.venueSession);
-            setPlan(restored.plan ?? saved.plan ?? null);
-            setRestoredPlanObjects(restored.plan?.objects);
+            setPlan(resolvedPlan);
+            setRestoredPlanObjects(resolvedPlan?.objects);
             setStep(saved.step === "events" ? "venue" : saved.step);
           }
         } catch {
@@ -123,6 +125,22 @@ export default function Home() {
     clearAppSession();
   };
 
+  const refreshEventLayout = async (eventId: number, preferSessionPlan = false) => {
+    const fullEvent = await getEvent(eventId);
+    const restored = applyFullEventState(fullEvent);
+    const resolvedPlan = preferSessionPlan
+      ? resolveEventPlan(fullEvent, plan)
+      : restored.plan;
+
+    setSelectedEvent(restored.event);
+    setEventDetails(restored.eventDetails);
+    setVenueSession(restored.venueSession);
+    setPlan(resolvedPlan);
+    setRestoredPlanObjects(resolvedPlan?.objects);
+
+    return { fullEvent, restored, resolvedPlan };
+  };
+
   const selectEvent = async (event: EventRecord) => {
     setLoadingEventId(event.id);
 
@@ -157,6 +175,44 @@ export default function Home() {
     }
 
     setStep("details");
+  };
+
+  const handleLayoutSaved = async (updatedVenue: VenueRecord) => {
+    setVenueSession((current) =>
+      current
+        ? {
+            ...current,
+            venue: normalizeVenue({
+              ...current.venue,
+              ...updatedVenue,
+              layout_2d_url:
+                updatedVenue.layout_2d_url ?? current.venue.layout_2d_url,
+            }),
+          }
+        : current,
+    );
+
+    if (!selectedEvent) return;
+
+    const { resolvedPlan } = await refreshEventLayout(selectedEvent.id);
+    setPlan(resolvedPlan);
+    setRestoredPlanObjects(resolvedPlan?.objects);
+    setStep("generate");
+  };
+
+  const handleBackToLayout = async () => {
+    if (!selectedEvent) {
+      setStep("layout");
+      return;
+    }
+
+    try {
+      await refreshEventLayout(selectedEvent.id, true);
+    } catch {
+      // Keep the in-memory plan if the refresh fails.
+    }
+
+    setStep("layout");
   };
 
   const acceptReplacementFile = (file: File | null | undefined) => {
@@ -221,7 +277,7 @@ export default function Home() {
             ? `${plan.objects.length} objects, ${plan.venue.areaSqFt} sq ft`
             : undefined
         }
-        onBack={() => setStep("layout")}
+        onBack={() => void handleBackToLayout()}
       />
     );
   }
@@ -316,9 +372,11 @@ export default function Home() {
           eventId={selectedEvent.id}
           initialVenueLength={initialVenueLength}
           initialVenueWidth={initialVenueWidth}
-          initialPlanObjects={restoredPlanObjects ?? plan?.objects}
+          initialPlanObjects={
+            plan?.objects?.length ? plan.objects : restoredPlanObjects
+          }
           onPlanChange={setPlan}
-          onContinue={() => setStep("generate")}
+          onContinue={(updatedVenue) => void handleLayoutSaved(updatedVenue)}
         />
       </div>
     </main>

@@ -20,6 +20,7 @@ import {
   type EventProductRecord,
   type ProductMasterRecord,
 } from "@/lib/api";
+import { buildPlacementHint } from "@/lib/event-restore";
 import { cn } from "@/lib/utils";
 
 export type CanvasPlacement = {
@@ -37,6 +38,7 @@ export type EventProductsPanelHandle = {
     productMasterId: number,
     placement: { x: number; y: number; width: number; height: number },
   ) => Promise<void>;
+  syncCanvasPlacements: (placements: CanvasPlacement[]) => Promise<void>;
 };
 
 type EventProductsPanelProps = {
@@ -149,12 +151,55 @@ export const EventProductsPanel = React.forwardRef<
     [eventId, loadEventProducts],
   );
 
+  const syncCanvasPlacements = React.useCallback(
+    async (placements: CanvasPlacement[]) => {
+      setError(null);
+
+      const grouped = new Map<number, CanvasPlacement[]>();
+      placements.forEach((placement) => {
+        const existing = grouped.get(placement.productMasterId) ?? [];
+        existing.push(placement);
+        grouped.set(placement.productMasterId, existing);
+      });
+
+      try {
+        await Promise.all(
+          eventProductsRef.current.map(async (record) => {
+            const canvasForProduct =
+              grouped.get(record.product_master_id) ?? [];
+            const placementHint = buildPlacementHint(canvasForProduct);
+            const extraNotes = canvasForProduct.length
+              ? `${canvasForProduct[0]!.width} x ${canvasForProduct[0]!.height} ft on canvas`
+              : (record.extra_notes ?? "");
+
+            await updateEventProduct(eventId, record.id, {
+              quantity: canvasForProduct.length || record.quantity,
+              placement_hint: placementHint,
+              extra_notes: extraNotes,
+            });
+          }),
+        );
+
+        await loadEventProducts();
+      } catch (syncError) {
+        setError(
+          syncError instanceof Error
+            ? syncError.message
+            : "Failed to save canvas placements.",
+        );
+        throw syncError;
+      }
+    },
+    [eventId, loadEventProducts],
+  );
+
   React.useImperativeHandle(
     ref,
     () => ({
       addProductFromCanvas,
+      syncCanvasPlacements,
     }),
-    [addProductFromCanvas],
+    [addProductFromCanvas, syncCanvasPlacements],
   );
 
   const catalogOptions = React.useMemo(() => {

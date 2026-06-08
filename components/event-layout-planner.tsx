@@ -16,7 +16,7 @@ import {
 
 import { ProductMasterPanel } from "@/components/product-master-panel";
 import { Button } from "@/components/ui/button";
-import { type ProductMasterRecord, uploadVenueLayout } from "@/lib/api";
+import { type ProductMasterRecord, type VenueRecord, uploadVenueLayout } from "@/lib/api";
 import {
   buildProductTemplateMap,
   clampObjectSize,
@@ -676,7 +676,7 @@ export function EventLayoutPlanner({
 }: {
   eventId: number;
   onPlanChange?: (plan: EventLayoutPlannerPlan) => void;
-  onContinue?: () => void;
+  onContinue?: (venue: VenueRecord) => void | Promise<void>;
   initialVenueLength?: number;
   initialVenueWidth?: number;
   initialPlanObjects?: EventLayoutPlannerPlan["objects"];
@@ -1349,6 +1349,8 @@ export function EventLayoutPlanner({
     setIsContinuing(true);
 
     try {
+      await eventProductsRef.current?.syncCanvasPlacements(canvasPlacements);
+
       const svg = svgRef.current;
       if (!svg) {
         throw new Error("SVG element not found");
@@ -1360,8 +1362,8 @@ export function EventLayoutPlanner({
         snapshotDimensions.height,
       );
       const pngBlob = await renderSvgCloneToPngBlob(clone);
-      await uploadVenueLayout(eventId, pngBlob);
-      onContinue?.();
+      const updatedVenue = await uploadVenueLayout(eventId, pngBlob);
+      await onContinue?.(updatedVenue);
     } catch (err) {
       console.error("Error generating/uploading layout snapshot:", err);
     } finally {

@@ -58,6 +58,14 @@ function parseCanvasDimensions(
   return { width, height };
 }
 
+export function buildPlacementHint(
+  placements: Array<{ x: number; y: number }>,
+): string {
+  return placements
+    .map((placement) => `x:${placement.x.toFixed(1)}, y:${placement.y.toFixed(1)} ft`)
+    .join("; ");
+}
+
 export function buildPlanFromProducts(
   products: EventProductRecord[],
   venueLength: number,
@@ -123,6 +131,47 @@ export function extractEventDetails(
   return fullEvent.event_details ?? null;
 }
 
+function buildEmptyPlan(
+  venueLength: number,
+  venueWidth: number,
+): EventLayoutPlannerPlan {
+  return {
+    venue: {
+      lengthFt: venueLength,
+      widthFt: venueWidth,
+      areaSqFt: venueLength * venueWidth,
+    },
+    objects: [],
+  };
+}
+
+export function buildPlanFromEvent(
+  fullEvent: FullEventRecord,
+): EventLayoutPlannerPlan | null {
+  if (!fullEvent.venue) return null;
+
+  const venue = normalizeVenue(fullEvent.venue);
+  const venueLength = venue.length_ft ?? 90;
+  const venueWidth = venue.width_ft ?? 55;
+
+  return fullEvent.products?.length
+    ? buildPlanFromProducts(fullEvent.products, venueLength, venueWidth)
+    : buildEmptyPlan(venueLength, venueWidth);
+}
+
+export function resolveEventPlan(
+  fullEvent: FullEventRecord,
+  sessionPlan?: EventLayoutPlannerPlan | null,
+): EventLayoutPlannerPlan | null {
+  const apiPlan = buildPlanFromEvent(fullEvent);
+
+  if (sessionPlan?.objects?.length) {
+    return sessionPlan;
+  }
+
+  return apiPlan;
+}
+
 export function applyFullEventState(fullEvent: FullEventRecord): {
   event: ReturnType<typeof toEventRecord>;
   eventDetails: EventDetailsRecord | null;
@@ -144,18 +193,7 @@ export function applyFullEventState(fullEvent: FullEventRecord): {
   }
 
   const venue = normalizeVenue(fullEvent.venue);
-  const venueLength = venue.length_ft ?? 90;
-  const venueWidth = venue.width_ft ?? 55;
-  const plan = fullEvent.products?.length
-    ? buildPlanFromProducts(fullEvent.products, venueLength, venueWidth)
-    : {
-        venue: {
-          lengthFt: venueLength,
-          widthFt: venueWidth,
-          areaSqFt: venueLength * venueWidth,
-        },
-        objects: [],
-      };
+  const plan = buildPlanFromEvent(fullEvent);
 
   return {
     event,
