@@ -197,6 +197,19 @@ export async function uploadVenue(
   });
 }
 
+export async function uploadVenueLayout(
+  eventId: number,
+  layoutImage: Blob | File,
+): Promise<VenueRecord> {
+  const formData = new FormData();
+  formData.append("layout_image", layoutImage, "layout.png");
+
+  return apiRequest<VenueRecord>(`/events/${eventId}/venue/layout`, {
+    method: "PATCH",
+    body: formData,
+  });
+}
+
 export type ProductMasterRecord = {
   id: number;
   name: string;

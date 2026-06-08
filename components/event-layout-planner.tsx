@@ -16,7 +16,7 @@ import {
 
 import { ProductMasterPanel } from "@/components/product-master-panel";
 import { Button } from "@/components/ui/button";
-import type { ProductMasterRecord } from "@/lib/api";
+import { type ProductMasterRecord, uploadVenueLayout } from "@/lib/api";
 import {
   buildProductTemplateMap,
   clampObjectSize,
@@ -30,6 +30,171 @@ import {
 } from "@/lib/product-master-planner";
 
 const CANVAS_VIEW_SIZE = 1000;
+const SNAPSHOT_LEGEND_GAP = 24;
+const SNAPSHOT_LEGEND_ROW_GAP = 36;
+const SNAPSHOT_LEGEND_HEADER_HEIGHT = 76;
+const SNAPSHOT_LEGEND_PADDING = 20;
+
+function getSnapshotDimensions(objectCount: number) {
+  const legendHeight =
+    SNAPSHOT_LEGEND_HEADER_HEIGHT +
+    objectCount * SNAPSHOT_LEGEND_ROW_GAP +
+    SNAPSHOT_LEGEND_PADDING;
+  const legendTop = CANVAS_VIEW_SIZE + SNAPSHOT_LEGEND_GAP;
+  const height = legendTop + legendHeight;
+
+  return {
+    width: CANVAS_VIEW_SIZE,
+    height,
+    legendTop,
+    legendHeight,
+  };
+}
+
+const snapshotImageDataUrlCache = new Map<string, string>();
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Failed to read image blob"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function fetchImageAsDataUrl(url: string): Promise<string> {
+  const absoluteUrl = new URL(url, window.location.href).href;
+  const cached = snapshotImageDataUrlCache.get(absoluteUrl);
+  if (cached) {
+    return cached;
+  }
+
+  let response: Response | null = null;
+
+  try {
+    const direct = await fetch(absoluteUrl, {
+      mode: "cors",
+      credentials: "omit",
+    });
+    if (direct.ok) {
+      response = direct;
+    }
+  } catch {
+    // Fall back to same-origin proxy below.
+  }
+
+  if (!response) {
+    const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(absoluteUrl)}`;
+    const proxied = await fetch(proxyUrl);
+    if (!proxied.ok) {
+      throw new Error(`Failed to load image (${proxied.status})`);
+    }
+    response = proxied;
+  }
+
+  const dataUrl = await blobToDataUrl(await response.blob());
+  snapshotImageDataUrlCache.set(absoluteUrl, dataUrl);
+  return dataUrl;
+}
+
+async function embedSvgExternalImages(clone: SVGSVGElement): Promise<void> {
+  const xlinkNS = "http://www.w3.org/1999/xlink";
+  const images = Array.from(clone.querySelectorAll("image"));
+
+  await Promise.all(
+    images.map(async (element) => {
+      const href =
+        element.getAttribute("href") ??
+        element.getAttributeNS(xlinkNS, "href");
+      if (!href || href.startsWith("data:") || href.startsWith("blob:")) {
+        return;
+      }
+
+      try {
+        const dataUrl = await fetchImageAsDataUrl(href);
+        element.setAttribute("href", dataUrl);
+        element.removeAttributeNS(xlinkNS, "href");
+      } catch (error) {
+        console.warn(
+          "Snapshot: removing image that could not be embedded",
+          href,
+          error,
+        );
+        element.remove();
+      }
+    }),
+  );
+}
+
+async function prepareSnapshotClone(
+  svg: SVGSVGElement,
+  snapshotWidth: number,
+  snapshotHeight: number,
+) {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  clone.setAttribute("viewBox", `0 0 ${snapshotWidth} ${snapshotHeight}`);
+  clone.setAttribute("width", "2000");
+  clone.setAttribute(
+    "height",
+    `${Math.round((2000 * snapshotHeight) / snapshotWidth)}`,
+  );
+
+  clone
+    .querySelectorAll("[data-editor-only='true']")
+    .forEach((node) => node.remove());
+  clone.querySelectorAll("[data-snapshot-only='true']").forEach((node) => {
+    node.removeAttribute("display");
+    node.setAttribute("opacity", "1");
+  });
+
+  await embedSvgExternalImages(clone);
+
+  return clone;
+}
+
+async function renderSvgCloneToPngBlob(clone: SVGSVGElement): Promise<Blob> {
+  const serializer = new XMLSerializer();
+  const source = serializer.serializeToString(clone);
+  const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  try {
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Failed to load SVG layout image"));
+      image.src = url;
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Failed to get 2D context");
+    }
+
+    context.drawImage(image, 0, 0);
+
+    const pngBlob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((result) => {
+        if (result) {
+          resolve(result);
+        } else {
+          reject(new Error("Canvas toBlob failed"));
+        }
+      }, "image/png");
+    });
+
+    return pngBlob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 function toDisplayX(valueFt: number, venueLengthFt: number) {
   if (venueLengthFt <= 0) return 0;
@@ -58,18 +223,312 @@ type PlannerObject = PlannerTemplate & {
   rotation: number;
 };
 
-function objectToDisplay(
+const FIXED_VISUAL_SIZES: Record<string, { width: number; height: number }> = {
+  seating: { width: 56, height: 56 },
+  sofa: { width: 84, height: 56 },
+  furniture: { width: 84, height: 56 },
+  mandap: { width: 96, height: 96 },
+  decor: { width: 88, height: 88 },
+  stage: { width: 104, height: 48 },
+  backdrop: { width: 104, height: 40 },
+  aisle: { width: 48, height: 84 },
+  dining: { width: 80, height: 52 },
+  default: { width: 64, height: 64 },
+};
+
+function resolveVisualCategory(object: PlannerObject): string {
+  const nameLower = object.label.toLowerCase();
+  const category = normalizeProductCategory(object.category) ?? "";
+
+  if (nameLower.includes("sofa")) return "sofa";
+  if (nameLower.includes("mandap")) return "mandap";
+  if (nameLower.includes("chair") || nameLower.includes("seat")) return "seating";
+
+  return category || "default";
+}
+
+function getFixedVisualSize(object: PlannerObject): { width: number; height: number } {
+  const key = resolveVisualCategory(object);
+  return FIXED_VISUAL_SIZES[key] ?? FIXED_VISUAL_SIZES.default;
+}
+
+function objectToVisualDisplay(
   object: PlannerObject,
   venueLength: number,
   venueWidth: number,
 ): PlannerObject {
+  const fixed = getFixedVisualSize(object);
+  const anchorX = toDisplayX(object.x, venueLength);
+  const anchorY = toDisplayY(object.y, venueWidth);
+  const logicalWidth = toDisplayX(object.width, venueLength);
+  const logicalHeight = toDisplayY(object.height, venueWidth);
+  const centerX = anchorX + logicalWidth / 2;
+  const centerY = anchorY + logicalHeight / 2;
+
   return {
     ...object,
-    x: toDisplayX(object.x, venueLength),
-    y: toDisplayY(object.y, venueWidth),
-    width: toDisplayX(object.width, venueLength),
-    height: toDisplayY(object.height, venueWidth),
+    x: centerX - fixed.width / 2,
+    y: centerY - fixed.height / 2,
+    width: fixed.width,
+    height: fixed.height,
   };
+}
+
+function displayBoxesOverlap(
+  first: Pick<PlannerObject, "x" | "y" | "width" | "height">,
+  second: Pick<PlannerObject, "x" | "y" | "width" | "height">,
+) {
+  return (
+    first.x < second.x + second.width &&
+    first.x + first.width > second.x &&
+    first.y < second.y + second.height &&
+    first.y + first.height > second.y
+  );
+}
+
+function intersectionBox(
+  first: Pick<PlannerObject, "x" | "y" | "width" | "height">,
+  second: Pick<PlannerObject, "x" | "y" | "width" | "height">,
+) {
+  const x = Math.max(first.x, second.x);
+  const y = Math.max(first.y, second.y);
+  const right = Math.min(first.x + first.width, second.x + second.width);
+  const bottom = Math.min(first.y + first.height, second.y + second.height);
+  const width = right - x;
+  const height = bottom - y;
+
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return { x, y, width, height };
+}
+
+type OverlapInfo = {
+  /** IDs of all objects this object overlaps with */
+  overlappingWith: string[];
+  /**
+   * true  → this object is "on top" (smaller area or placed later)
+   *         → render with reduced opacity so the object beneath shows through
+   * false → this object is the background (larger or placed earlier)
+   */
+  isTopObject: boolean;
+  /** How many objects are in this overlap cluster (for the count badge) */
+  clusterSize: number;
+  /** Show the cluster-count badge on top of this object */
+  showClusterBadge: boolean;
+};
+
+function computeOverlapInfo(
+  objects: PlannerObject[],
+  venueLength: number,
+  venueWidth: number,
+): Map<string, OverlapInfo> {
+  const visuals = objects.map((object) => {
+    const visual = objectToVisualDisplay(object, venueLength, venueWidth);
+    return {
+      id: object.id,
+      x: visual.x,
+      y: visual.y,
+      width: visual.width,
+      height: visual.height,
+      area: visual.width * visual.height,
+      arrayIndex: objects.findIndex((o) => o.id === object.id),
+    };
+  });
+
+  // Union-Find for cluster grouping
+  const parent = new Map<string, string>();
+  const find = (id: string): string => {
+    const cur = parent.get(id) ?? id;
+    if (cur === id) return id;
+    const root = find(cur);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+  visuals.forEach((v) => parent.set(v.id, v.id));
+
+  // Collect pairwise overlaps
+  const pairOverlaps: Array<[string, string]> = [];
+  visuals.forEach((v, i) => {
+    visuals.slice(i + 1).forEach((other) => {
+      if (displayBoxesOverlap(v, other)) {
+        pairOverlaps.push([v.id, other.id]);
+        union(v.id, other.id);
+      }
+    });
+  });
+
+  // Build per-id: who am I overlapping with?
+  const overlappingWithMap = new Map<string, Set<string>>();
+  visuals.forEach((v) => overlappingWithMap.set(v.id, new Set()));
+  pairOverlaps.forEach(([a, b]) => {
+    overlappingWithMap.get(a)!.add(b);
+    overlappingWithMap.get(b)!.add(a);
+  });
+
+  // Build clusters
+  const clusters = new Map<string, string[]>();
+  visuals.forEach((v) => {
+    const root = find(v.id);
+    const members = clusters.get(root) ?? [];
+    members.push(v.id);
+    clusters.set(root, members);
+  });
+
+  const result = new Map<string, OverlapInfo>();
+
+  clusters.forEach((memberIds) => {
+    if (memberIds.length < 2) return;
+
+    // Sort by area DESC, then by array index ASC (larger/earlier = background)
+    const sorted = [...memberIds].sort((a, b) => {
+      const va = visuals.find((v) => v.id === a)!;
+      const vb = visuals.find((v) => v.id === b)!;
+      if (vb.area !== va.area) return vb.area - va.area; // bigger area first
+      return va.arrayIndex - vb.arrayIndex; // earlier placement first
+    });
+
+    // The LAST in sorted order is the "top" object (smallest / placed last)
+    const topId = sorted[sorted.length - 1];
+
+    memberIds.forEach((id) => {
+      result.set(id, {
+        overlappingWith: Array.from(overlappingWithMap.get(id) ?? []),
+        isTopObject: id === topId,
+        clusterSize: memberIds.length,
+        showClusterBadge: id === topId,
+      });
+    });
+  });
+
+  return result;
+}
+
+function hasVisualOverlap(
+  candidate: PlannerObject,
+  existingObjects: PlannerObject[],
+  venueLength: number,
+  venueWidth: number,
+  padding = 6,
+): boolean {
+  const candidateVisual = objectToVisualDisplay(candidate, venueLength, venueWidth);
+  const paddedCandidate = {
+    x: candidateVisual.x - padding,
+    y: candidateVisual.y - padding,
+    width: candidateVisual.width + padding * 2,
+    height: candidateVisual.height + padding * 2,
+  };
+
+  return existingObjects.some((object) => {
+    const visual = objectToVisualDisplay(object, venueLength, venueWidth);
+    return displayBoxesOverlap(paddedCandidate, visual);
+  });
+}
+
+function findOpenPlacementPosition(
+  template: PlannerTemplate,
+  catalog: { width: number; height: number },
+  existingObjects: PlannerObject[],
+  venueLength: number,
+  venueWidth: number,
+  preferred?: Point,
+): Point {
+  const clampPosition = (x: number, y: number): Point => ({
+    x: clamp(x, 0, Math.max(0, venueLength - catalog.width)),
+    y: clamp(y, 0, Math.max(0, venueWidth - catalog.height)),
+  });
+
+  const makeCandidate = (x: number, y: number): PlannerObject => {
+    const position = clampPosition(x, y);
+    return {
+      ...template,
+      ...catalog,
+      id: "candidate",
+      x: position.x,
+      y: position.y,
+      rotation: 0,
+    };
+  };
+
+  const isFree = (x: number, y: number) =>
+    !hasVisualOverlap(
+      makeCandidate(x, y),
+      existingObjects,
+      venueLength,
+      venueWidth,
+    );
+
+  if (preferred) {
+    const preferredPosition = clampPosition(preferred.x, preferred.y);
+    if (isFree(preferredPosition.x, preferredPosition.y)) {
+      return preferredPosition;
+    }
+  }
+
+  const gridSlots =
+    Math.max(
+      1,
+      Math.ceil(venueLength / Math.max(catalog.width, 4)),
+    ) *
+    Math.max(
+      1,
+      Math.ceil(venueWidth / Math.max(catalog.height, 4)),
+    );
+
+  for (let index = 0; index < gridSlots + existingObjects.length; index += 1) {
+    const position = getGridPosition(
+      index,
+      catalog.width,
+      catalog.height,
+      venueLength,
+      venueWidth,
+    );
+    if (isFree(position.x, position.y)) {
+      return position;
+    }
+  }
+
+  const step = Math.max(catalog.width, catalog.height, 6);
+  const centerX = venueLength / 2 - catalog.width / 2;
+  const centerY = venueWidth / 2 - catalog.height / 2;
+
+  for (let ring = 1; ring <= 24; ring += 1) {
+    for (let angle = 0; angle < 8; angle += 1) {
+      const radians = (angle * Math.PI) / 4;
+      const position = clampPosition(
+        centerX + Math.cos(radians) * ring * step,
+        centerY + Math.sin(radians) * ring * step,
+      );
+      if (isFree(position.x, position.y)) {
+        return position;
+      }
+    }
+  }
+
+  const lastObject = existingObjects[existingObjects.length - 1];
+  if (lastObject) {
+    const offsetPosition = clampPosition(
+      lastObject.x + lastObject.width + 2,
+      lastObject.y,
+    );
+    if (isFree(offsetPosition.x, offsetPosition.y)) {
+      return offsetPosition;
+    }
+  }
+
+  return getGridPosition(
+    existingObjects.length,
+    catalog.width,
+    catalog.height,
+    venueLength,
+    venueWidth,
+  );
 }
 
 type MoveState = {
@@ -119,68 +578,62 @@ const resizeHandles: Array<{
   cursor: string;
   getPoint: (object: PlannerObject) => Point;
 }> = [
-  {
-    handle: "nw",
-    cursor: "nwse-resize",
-    getPoint: (object) => ({ x: object.x, y: object.y }),
-  },
-  {
-    handle: "n",
-    cursor: "ns-resize",
-    getPoint: (object) => ({ x: object.x + object.width / 2, y: object.y }),
-  },
-  {
-    handle: "ne",
-    cursor: "nesw-resize",
-    getPoint: (object) => ({ x: object.x + object.width, y: object.y }),
-  },
-  {
-    handle: "e",
-    cursor: "ew-resize",
-    getPoint: (object) => ({
-      x: object.x + object.width,
-      y: object.y + object.height / 2,
-    }),
-  },
-  {
-    handle: "se",
-    cursor: "nwse-resize",
-    getPoint: (object) => ({
-      x: object.x + object.width,
-      y: object.y + object.height,
-    }),
-  },
-  {
-    handle: "s",
-    cursor: "ns-resize",
-    getPoint: (object) => ({
-      x: object.x + object.width / 2,
-      y: object.y + object.height,
-    }),
-  },
-  {
-    handle: "sw",
-    cursor: "nesw-resize",
-    getPoint: (object) => ({ x: object.x, y: object.y + object.height }),
-  },
-  {
-    handle: "w",
-    cursor: "ew-resize",
-    getPoint: (object) => ({ x: object.x, y: object.y + object.height / 2 }),
-  },
-];
+    {
+      handle: "nw",
+      cursor: "nwse-resize",
+      getPoint: (object) => ({ x: object.x, y: object.y }),
+    },
+    {
+      handle: "n",
+      cursor: "ns-resize",
+      getPoint: (object) => ({ x: object.x + object.width / 2, y: object.y }),
+    },
+    {
+      handle: "ne",
+      cursor: "nesw-resize",
+      getPoint: (object) => ({ x: object.x + object.width, y: object.y }),
+    },
+    {
+      handle: "e",
+      cursor: "ew-resize",
+      getPoint: (object) => ({
+        x: object.x + object.width,
+        y: object.y + object.height / 2,
+      }),
+    },
+    {
+      handle: "se",
+      cursor: "nwse-resize",
+      getPoint: (object) => ({
+        x: object.x + object.width,
+        y: object.y + object.height,
+      }),
+    },
+    {
+      handle: "s",
+      cursor: "ns-resize",
+      getPoint: (object) => ({
+        x: object.x + object.width / 2,
+        y: object.y + object.height,
+      }),
+    },
+    {
+      handle: "sw",
+      cursor: "nesw-resize",
+      getPoint: (object) => ({ x: object.x, y: object.y + object.height }),
+    },
+    {
+      handle: "w",
+      cursor: "ew-resize",
+      getPoint: (object) => ({ x: object.x, y: object.y + object.height / 2 }),
+    },
+  ];
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
 const makeObjectId = (productMasterId: number) =>
   `pm-${productMasterId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-
-const objectsOverlap = (first: PlannerObject, second: PlannerObject) =>
-  first.x < second.x + second.width &&
-  first.x + first.width > second.x &&
-  first.y < second.y + second.height &&
-  first.y + first.height > second.y;
 
 const formatNumber = (value: number) => Number(value.toFixed(1));
 
@@ -243,6 +696,7 @@ export function EventLayoutPlanner({
   const [placementError, setPlacementError] = React.useState<string | null>(
     null,
   );
+  const [isContinuing, setIsContinuing] = React.useState(false);
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const eventProductsRef = React.useRef<EventProductsPanelHandle | null>(null);
   const restoredPlanRef = React.useRef(false);
@@ -258,20 +712,15 @@ export function EventLayoutPlanner({
     [selectedIds],
   );
 
+  const overlapInfoMap = React.useMemo(
+    () => computeOverlapInfo(objects, venueLength, venueWidth),
+    [objects, venueLength, venueWidth],
+  );
   const overlapIds = React.useMemo(() => {
     const ids = new Set<string>();
-
-    objects.forEach((object, index) => {
-      objects.slice(index + 1).forEach((otherObject) => {
-        if (objectsOverlap(object, otherObject)) {
-          ids.add(object.id);
-          ids.add(otherObject.id);
-        }
-      });
-    });
-
+    overlapInfoMap.forEach((_, id) => ids.add(id));
     return ids;
-  }, [objects]);
+  }, [overlapInfoMap]);
 
   const canvasPlacements = React.useMemo<CanvasPlacement[]>(
     () =>
@@ -322,7 +771,10 @@ export function EventLayoutPlanner({
     return lines;
   }, [venueLength, venueWidth]);
 
-  const snapshotHeight = venueWidth + 16 + objects.length * 4.5;
+  const snapshotDimensions = React.useMemo(
+    () => getSnapshotDimensions(objects.length),
+    [objects.length],
+  );
   const venueAreaSqFt = venueLength * venueWidth;
 
   const resolveObjectDimensions = React.useCallback(
@@ -468,20 +920,21 @@ export function EventLayoutPlanner({
         setPlacementError(null);
       }
 
+      const placement = findOpenPlacementPosition(
+        template,
+        catalog,
+        objects,
+        venueLength,
+        venueWidth,
+        position,
+      );
+
       const nextObject: PlannerObject = {
         ...template,
         ...catalog,
         id: makeObjectId(productMasterId),
-        x: clamp(
-          position?.x ?? venueLength / 2 - catalog.width / 2,
-          0,
-          Math.max(0, venueLength - catalog.width),
-        ),
-        y: clamp(
-          position?.y ?? venueWidth / 2 - catalog.height / 2,
-          0,
-          Math.max(0, venueWidth - catalog.height),
-        ),
+        x: placement.x,
+        y: placement.y,
         rotation: 0,
       };
 
@@ -489,7 +942,7 @@ export function EventLayoutPlanner({
       setSelectedIds([nextObject.id]);
       return nextObject;
     },
-    [productTemplateMap, resolveObjectDimensions, venueLength, venueWidth],
+    [objects, productTemplateMap, resolveObjectDimensions, venueLength, venueWidth],
   );
 
   const placeProduct = React.useCallback(
@@ -547,17 +1000,17 @@ export function EventLayoutPlanner({
         setPlacementError(null);
       }
 
-      const newObjects: PlannerObject[] = Array.from({ length: toPlace }, (_, i) => {
-        const index = currentCount + i;
-        const position = getGridPosition(
-          index,
-          catalog.width,
-          catalog.height,
+      const placedObjects = [...objects];
+      const newObjects: PlannerObject[] = Array.from({ length: toPlace }, () => {
+        const position = findOpenPlacementPosition(
+          template,
+          catalog,
+          placedObjects,
           venueLength,
           venueWidth,
         );
 
-        return {
+        const nextObject: PlannerObject = {
           ...template,
           ...catalog,
           id: makeObjectId(productMasterId),
@@ -565,6 +1018,9 @@ export function EventLayoutPlanner({
           y: position.y,
           rotation: 0,
         };
+
+        placedObjects.push(nextObject);
+        return nextObject;
       });
 
       setObjects((currentObjects) => [...currentObjects, ...newObjects]);
@@ -602,11 +1058,11 @@ export function EventLayoutPlanner({
           const limits = template
             ? getLimitsForTemplate(template)
             : getResizeLimits(
-                object.category,
-                object.label,
-                venueLength,
-                venueWidth,
-              );
+              object.category,
+              object.label,
+              venueLength,
+              venueWidth,
+            );
           const size = clampObjectSize(
             patch.width ?? object.width,
             patch.height ?? object.height,
@@ -647,17 +1103,17 @@ export function EventLayoutPlanner({
         const template = productTemplateMap.get(object.productMasterId);
         const limits = template
           ? getResizeLimits(
-              template.category,
-              template.label,
-              nextLength,
-              venueWidth,
-            )
+            template.category,
+            template.label,
+            nextLength,
+            venueWidth,
+          )
           : getResizeLimits(
-              object.category,
-              object.label,
-              nextLength,
-              venueWidth,
-            );
+            object.category,
+            object.label,
+            nextLength,
+            venueWidth,
+          );
         const size = clampObjectSize(object.width, object.height, limits);
 
         return {
@@ -677,17 +1133,17 @@ export function EventLayoutPlanner({
         const template = productTemplateMap.get(object.productMasterId);
         const limits = template
           ? getResizeLimits(
-              template.category,
-              template.label,
-              venueLength,
-              nextWidth,
-            )
+            template.category,
+            template.label,
+            venueLength,
+            nextWidth,
+          )
           : getResizeLimits(
-              object.category,
-              object.label,
-              venueLength,
-              nextWidth,
-            );
+            object.category,
+            object.label,
+            venueLength,
+            nextWidth,
+          );
         const size = clampObjectSize(object.width, object.height, limits);
 
         return {
@@ -850,18 +1306,33 @@ export function EventLayoutPlanner({
 
       for (let pass = 0; pass < 8; pass += 1) {
         nextObjects.forEach((object, index) => {
+          const visual = objectToVisualDisplay(object, venueLength, venueWidth);
+
           nextObjects.slice(index + 1).forEach((otherObject) => {
-            if (!objectsOverlap(object, otherObject)) {
+            const otherVisual = objectToVisualDisplay(
+              otherObject,
+              venueLength,
+              venueWidth,
+            );
+
+            if (!displayBoxesOverlap(visual, otherVisual)) {
               return;
             }
 
+            const shiftDisplayX =
+              (visual.x + visual.width / 2 - otherVisual.x - otherVisual.width / 2) *
+              0.5;
+            const shiftDisplayY =
+              (visual.y + visual.height / 2 - otherVisual.y - otherVisual.height / 2) *
+              0.5;
+
             otherObject.x = clamp(
-              otherObject.x + otherObject.width / 2 + 2,
+              otherObject.x + toFeetX(shiftDisplayX, venueLength),
               0,
               Math.max(0, venueLength - otherObject.width),
             );
             otherObject.y = clamp(
-              otherObject.y + otherObject.height / 2 + 2,
+              otherObject.y + toFeetY(shiftDisplayY, venueWidth),
               0,
               Math.max(0, venueWidth - otherObject.height),
             );
@@ -873,6 +1344,31 @@ export function EventLayoutPlanner({
     });
   };
 
+  const handleContinue = async () => {
+    if (isContinuing) return;
+    setIsContinuing(true);
+
+    try {
+      const svg = svgRef.current;
+      if (!svg) {
+        throw new Error("SVG element not found");
+      }
+
+      const clone = await prepareSnapshotClone(
+        svg,
+        snapshotDimensions.width,
+        snapshotDimensions.height,
+      );
+      const pngBlob = await renderSvgCloneToPngBlob(clone);
+      await uploadVenueLayout(eventId, pngBlob);
+      onContinue?.();
+    } catch (err) {
+      console.error("Error generating/uploading layout snapshot:", err);
+    } finally {
+      setIsContinuing(false);
+    }
+  };
+
   const downloadSnapshot = async () => {
     const svg = svgRef.current;
 
@@ -880,44 +1376,26 @@ export function EventLayoutPlanner({
       return;
     }
 
-    const clone = svg.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute("viewBox", `0 0 ${venueLength} ${snapshotHeight}`);
-    clone.setAttribute("width", "2000");
-    clone.setAttribute(
-      "height",
-      `${Math.round((2000 * snapshotHeight) / venueLength)}`,
-    );
+    try {
+      const clone = await prepareSnapshotClone(
+        svg,
+        snapshotDimensions.width,
+        snapshotDimensions.height,
+      );
+      const pngBlob = await renderSvgCloneToPngBlob(clone);
+      const url = URL.createObjectURL(pngBlob);
 
-    clone
-      .querySelectorAll("[data-editor-only='true']")
-      .forEach((node) => node.remove());
-    clone.querySelectorAll("[data-snapshot-only='true']").forEach((node) => {
-      node.removeAttribute("display");
-      node.setAttribute("opacity", "1");
-    });
-
-    const serializer = new XMLSerializer();
-    const source = serializer.serializeToString(clone);
-    const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const image = new Image();
-
-    image.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = image.width;
-      canvas.height = image.height;
-
-      const context = canvas.getContext("2d");
-      context?.drawImage(image, 0, 0);
-      URL.revokeObjectURL(url);
-
-      const link = document.createElement("a");
-      link.download = "wedding-layout-ai-reference.png";
-      link.href = canvas.toDataURL("image/png");
-      link.click();
-    };
-
-    image.src = url;
+      try {
+        const link = document.createElement("a");
+        link.download = "wedding-layout-ai-reference.png";
+        link.href = url;
+        link.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error("Error generating layout snapshot:", err);
+    }
   };
 
   const handleCanvasDrop = (event: React.DragEvent<HTMLDivElement>) => {
@@ -947,57 +1425,57 @@ export function EventLayoutPlanner({
       <div className="mx-auto grid w-full max-w-[1540px] flex-1 grid-cols-1 gap-4 px-4 pb-4 lg:min-h-0 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)_minmax(0,320px)] lg:overflow-hidden">
         <aside className="flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border border-[#d8d1c3] bg-white p-4 shadow-sm">
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6b715f]">
-              Wedding Layout
-            </p>
-            <h1 className="mt-2 text-2xl font-semibold">2D event planner</h1>
-          </div>
-
-          <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Venue size</h2>
-              <span className="rounded-md bg-[#eef3ea] px-2 py-1 text-xs font-medium text-[#45614c]">
-                {venueAreaSqFt} sq ft
-              </span>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6b715f]">
+                Wedding Layout
+              </p>
+              <h1 className="mt-2 text-2xl font-semibold">2D event planner</h1>
             </div>
 
-            <NumberField
-              label="Length"
-              value={venueLength}
-              min={5}
-              max={180}
-              suffix="ft"
-              onChange={handleVenueLengthChange}
-            />
-            <NumberField
-              label="Width"
-              value={venueWidth}
-              min={5}
-              max={120}
-              suffix="ft"
-              onChange={handleVenueWidthChange}
-            />
-
-            {venueTooSmallForCatalog ? (
-              <div className="rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2 text-xs text-[#92400e]">
-                Small venue — place items then drag corner handles to resize
-                them down. Default sizes: chair 4×4 ft, sofa 14×6 ft, mandap
-                16×16 ft.
+            <section className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold">Venue size</h2>
+                <span className="rounded-md bg-[#eef3ea] px-2 py-1 text-xs font-medium text-[#45614c]">
+                  {venueAreaSqFt} sq ft
+                </span>
               </div>
-            ) : null}
 
-            {placementError ? (
-              <div className="rounded-lg border border-[#f1c0c0] bg-[#fff5f5] px-3 py-2 text-xs text-[#9b1c1c]">
-                {placementError}
-              </div>
-            ) : null}
-          </section>
+              <NumberField
+                label="Length"
+                value={venueLength}
+                min={5}
+                max={180}
+                suffix="ft"
+                onChange={handleVenueLengthChange}
+              />
+              <NumberField
+                label="Width"
+                value={venueWidth}
+                min={5}
+                max={120}
+                suffix="ft"
+                onChange={handleVenueWidthChange}
+              />
 
-          <ProductMasterPanel
-            onProductsChange={setProducts}
-            onAddToCanvas={(productId) => void placeProduct(productId)}
-          />
+              {venueTooSmallForCatalog ? (
+                <div className="rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2 text-xs text-[#92400e]">
+                  Small venue — place items then drag corner handles to resize
+                  them down. Default sizes: chair 4×4 ft, sofa 14×6 ft, mandap
+                  16×16 ft.
+                </div>
+              ) : null}
+
+              {placementError ? (
+                <div className="rounded-lg border border-[#f1c0c0] bg-[#fff5f5] px-3 py-2 text-xs text-[#9b1c1c]">
+                  {placementError}
+                </div>
+              ) : null}
+            </section>
+
+            <ProductMasterPanel
+              onProductsChange={setProducts}
+              onAddToCanvas={(productId) => void placeProduct(productId)}
+            />
           </div>
 
           <div className="flex shrink-0 gap-2 border-t border-[#ebe5da] pt-4">
@@ -1111,23 +1589,40 @@ export function EventLayoutPlanner({
                 strokeWidth="2"
               />
 
-              {objects.map((object, index) => (
+              {/* Render large objects first (bottom layer) so smaller ones appear on top.
+                  The smaller / top object is given opacity 0.8 so the background shows through. */}
+              {React.useMemo(() => {
+                // Build [{ object, originalIndex }] sorted by visual area DESC
+                // (largest rendered first → sits at the bottom in SVG z-order)
+                const indexed = objects.map((object, i) => ({
+                  object,
+                  originalIndex: i + 1,
+                  area: (() => {
+                    const v = objectToVisualDisplay(object, venueLength, venueWidth);
+                    return v.width * v.height;
+                  })(),
+                }));
+                // Only re-sort when there are actual overlaps; otherwise keep original order
+                if (overlapIds.size === 0) {
+                  return indexed;
+                }
+                return [...indexed].sort((a, b) => b.area - a.area);
+              }, [objects, venueLength, venueWidth, overlapIds]).map(({ object, originalIndex }) => (
                 <PlannerShape
                   key={object.id}
                   object={object}
-                  index={index + 1}
+                  index={originalIndex}
                   venueLength={venueLength}
                   venueWidth={venueWidth}
                   selected={selectedIdSet.has(object.id)}
-                  overlapping={overlapIds.has(object.id)}
+                  overlapInfo={overlapInfoMap.get(object.id)}
                   onPointerDown={startObjectMove}
-                  onResizeStart={startResize}
                 />
               ))}
 
               <SnapshotLegend
                 objects={objects}
-                y={venueWidth + 13}
+                legendTop={snapshotDimensions.legendTop}
                 venueLength={venueLength}
                 venueWidth={venueWidth}
                 overlapIds={overlapIds}
@@ -1151,7 +1646,8 @@ export function EventLayoutPlanner({
               })
             }
             onRemoveFromCanvas={removeObjectsByMasterId}
-            onContinue={onContinue}
+            onContinue={handleContinue}
+            isContinuing={isContinuing}
           />
         </aside>
       </div>
@@ -1203,55 +1699,68 @@ function PlannerShape({
   venueLength,
   venueWidth,
   selected,
-  overlapping,
+  overlapInfo,
   onPointerDown,
-  onResizeStart,
 }: {
   object: PlannerObject;
   index: number;
   venueLength: number;
   venueWidth: number;
   selected: boolean;
-  overlapping: boolean;
+  overlapInfo?: OverlapInfo;
   onPointerDown: (
     event: React.PointerEvent<SVGGElement>,
     object: PlannerObject,
   ) => void;
-  onResizeStart: (
-    event: React.PointerEvent<SVGCircleElement>,
-    object: PlannerObject,
-    handle: ResizeHandle,
-  ) => void;
 }) {
-  const display = objectToDisplay(object, venueLength, venueWidth);
+  const display = objectToVisualDisplay(object, venueLength, venueWidth);
   const centerX = display.x + display.width / 2;
   const centerY = display.y + display.height / 2;
+  const minDimension = Math.min(display.width, display.height);
   const uiUnit = CANVAS_VIEW_SIZE / 100;
-  const badgeRadius = Math.max(3.5, uiUnit * 1.4);
-  const badgeOffset = badgeRadius + uiUnit * 0.35;
-  const labelSize = Math.max(7.5, uiUnit * 2.8);
-  const dimensionSize = Math.max(6, uiUnit * 2.1);
+  const badgeRadius = Math.min(
+    Math.max(3, minDimension * 0.14),
+    Math.max(3.5, uiUnit * 1.2),
+  );
+  const badgeOffset = badgeRadius + 1.5;
+  const labelSize = Math.min(Math.max(4.5, minDimension * 0.16), 10);
+  const showLabel = selected || minDimension >= 48;
   const selectionPadding = Math.max(2.5, uiUnit * 0.8);
   const selectionStroke = Math.max(1.2, uiUnit * 0.18);
-  const handleRadius = Math.max(2.2, uiUnit * 1.1);
-  const handleStroke = Math.max(0.8, uiUnit * 0.14);
+  const cornerRadius = Math.min(8, display.width / 8, display.height / 8);
+  const isOverlapping = Boolean(overlapInfo);
+  // Top object = smaller/later → rendered on top naturally by SVG z-order → apply 0.8 opacity
+  const isTopObject = overlapInfo?.isTopObject ?? false;
 
   return (
     <g
       transform={`rotate(${object.rotation} ${centerX} ${centerY})`}
       onPointerDown={(event) => onPointerDown(event, object)}
       className="cursor-grab active:cursor-grabbing"
+      // Top overlapping object → semi-transparent so object beneath is visible
+      opacity={isTopObject && !selected ? 0.8 : 1}
     >
       <rect
         x={display.x}
         y={display.y}
         width={display.width}
         height={display.height}
-        rx={Math.min(8, display.width / 8, display.height / 8)}
+        rx={cornerRadius}
         fill={object.fill}
-        fillOpacity={overlapping ? 0.78 : 0.95}
-        stroke={selected ? "#111827" : overlapping ? "#b91c1c" : object.stroke}
-        strokeWidth={selected ? selectionStroke * 1.2 : overlapping ? selectionStroke : selectionStroke * 0.8}
+        fillOpacity={0.95}
+        stroke={
+          selected
+            ? "#111827"
+            : isOverlapping && !isTopObject
+              ? object.stroke  // background object keeps its normal stroke
+              : object.stroke
+        }
+        strokeWidth={
+          selected
+            ? selectionStroke * 1.2
+            : selectionStroke * 0.8
+        }
+        pointerEvents="none"
       />
 
       <ObjectIllustration object={display} />
@@ -1263,6 +1772,7 @@ function PlannerShape({
         fill="#1f2937"
         stroke="#fffdf8"
         strokeWidth={Math.max(0.8, uiUnit * 0.12)}
+        pointerEvents="none"
       />
       <text
         x={display.x + badgeOffset}
@@ -1273,62 +1783,67 @@ function PlannerShape({
         fontSize={Math.max(0.65, badgeRadius * 1.05)}
         fontWeight="700"
         fill="#ffffff"
+        pointerEvents="none"
       >
         {index}
       </text>
 
-      <text
-        x={centerX}
-        y={centerY - uiUnit * 0.9}
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontFamily="Arial, sans-serif"
-        fontSize={labelSize}
-        fontWeight="700"
-        fill="#1f2520"
-        paintOrder="stroke"
-        stroke="#fffdf8"
-        strokeWidth={Math.max(0.08, uiUnit * 0.16)}
-      >
-        {object.label}
-      </text>
-
-      <text
-        x={centerX}
-        y={centerY + uiUnit * 1.1}
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontFamily="Arial, sans-serif"
-        fontSize={dimensionSize}
-        fontWeight="700"
-        fill="#374151"
-        paintOrder="stroke"
-        stroke="#fffdf8"
-        strokeWidth={Math.max(0.06, uiUnit * 0.12)}
-      >
-        {formatNumber(object.width)} x {formatNumber(object.height)} ft
-      </text>
-
-      {overlapping ? (
+      {showLabel ? (
         <text
           x={centerX}
-          y={display.y - uiUnit * 1.2}
+          y={display.y + display.height + labelSize * 0.9}
           textAnchor="middle"
-          dominantBaseline="central"
+          dominantBaseline="hanging"
           fontFamily="Arial, sans-serif"
-          fontSize={Math.max(0.7, uiUnit * 2.2)}
-          fontWeight="700"
-          fill="#b91c1c"
+          fontSize={labelSize}
+          fontWeight="600"
+          fill="#1f2520"
           paintOrder="stroke"
           stroke="#fffdf8"
-          strokeWidth={Math.max(0.06, uiUnit * 0.12)}
+          strokeWidth={Math.max(0.5, labelSize * 0.18)}
+          pointerEvents="none"
         >
-          overlap
+          {object.label}
         </text>
       ) : null}
 
+      {/* Cluster badge on the top object showing how many are overlapping */}
+      {overlapInfo?.showClusterBadge ? (
+        <g pointerEvents="none">
+          <rect
+            x={display.x + display.width - minDimension * 0.42}
+            y={display.y - minDimension * 0.18}
+            width={minDimension * 0.5}
+            height={minDimension * 0.22}
+            rx={minDimension * 0.11}
+            fill="#f59e0b"
+          />
+          <text
+            x={display.x + display.width - minDimension * 0.17}
+            y={display.y - minDimension * 0.07}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontFamily="Arial, sans-serif"
+            fontSize={Math.min(Math.max(4.5, minDimension * 0.13), 8)}
+            fontWeight="700"
+            fill="#ffffff"
+          >
+            {overlapInfo.clusterSize}×
+          </text>
+        </g>
+      ) : null}
+
+      <rect
+        x={display.x}
+        y={display.y}
+        width={display.width}
+        height={display.height}
+        fill="transparent"
+        pointerEvents="all"
+      />
+
       {selected ? (
-        <g data-editor-only="true">
+        <g data-editor-only="true" pointerEvents="none">
           <rect
             x={display.x - selectionPadding}
             y={display.y - selectionPadding}
@@ -1339,27 +1854,7 @@ function PlannerShape({
             stroke="#111827"
             strokeDasharray={`${uiUnit * 1.5} ${uiUnit * 1.1}`}
             strokeWidth={selectionStroke}
-            pointerEvents="none"
           />
-          {resizeHandles.map((item) => {
-            const point = item.getPoint(display);
-
-            return (
-              <circle
-                key={item.handle}
-                cx={point.x}
-                cy={point.y}
-                r={handleRadius}
-                fill="#ffffff"
-                stroke="#111827"
-                strokeWidth={handleStroke}
-                style={{ cursor: item.cursor }}
-                onPointerDown={(event) =>
-                  onResizeStart(event, object, item.handle)
-                }
-              />
-            );
-          })}
         </g>
       ) : null}
     </g>
@@ -1367,6 +1862,26 @@ function PlannerShape({
 }
 
 function ObjectIllustration({ object }: { object: PlannerObject }) {
+  const inset = Math.min(object.width, object.height) * 0.06;
+  const innerX = object.x + inset;
+  const innerY = object.y + inset;
+  const innerWidth = Math.max(0, object.width - inset * 2);
+  const innerHeight = Math.max(0, object.height - inset * 2);
+
+  if (object.imageSrc) {
+    return (
+      <image
+        href={object.imageSrc}
+        x={innerX}
+        y={innerY}
+        width={innerWidth}
+        height={innerHeight}
+        preserveAspectRatio="xMidYMid meet"
+        pointerEvents="none"
+      />
+    );
+  }
+
   const category = normalizeProductCategory(object.category) ?? "";
   const nameLower = object.label.toLowerCase();
   const resolvedCategory =
@@ -1379,55 +1894,69 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
           : category;
 
   if (resolvedCategory === "seating") {
+    const seatWidth = innerWidth * 0.72;
+    const seatHeight = innerHeight * 0.42;
+    const seatX = innerX + (innerWidth - seatWidth) / 2;
+    const seatY = innerY + innerHeight * 0.34;
+    const backHeight = innerHeight * 0.36;
+
     return (
-      <>
+      <g pointerEvents="none">
         <rect
-          x={object.x + object.width * 0.18}
-          y={object.y + object.height * 0.18}
-          width={object.width * 0.64}
-          height={object.height * 0.38}
-          rx="0.45"
+          x={seatX}
+          y={innerY + innerHeight * 0.08}
+          width={seatWidth}
+          height={backHeight}
+          rx={Math.max(0.8, innerWidth * 0.08)}
           fill={object.accent}
           stroke={object.stroke}
-          strokeWidth="0.25"
+          strokeWidth={Math.max(0.2, innerWidth * 0.04)}
+        />
+        <rect
+          x={seatX}
+          y={seatY}
+          width={seatWidth}
+          height={seatHeight}
+          rx={Math.max(0.8, innerWidth * 0.1)}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={Math.max(0.2, innerWidth * 0.04)}
         />
         <line
-          x1={object.x + object.width * 0.23}
-          x2={object.x + object.width * 0.77}
-          y1={object.y + object.height * 0.72}
-          y2={object.y + object.height * 0.72}
+          x1={seatX + seatWidth * 0.12}
+          x2={seatX + seatWidth * 0.88}
+          y1={seatY + seatHeight * 0.55}
+          y2={seatY + seatHeight * 0.55}
           stroke={object.stroke}
-          strokeWidth="0.35"
+          strokeWidth={Math.max(0.2, innerWidth * 0.035)}
         />
-      </>
+      </g>
     );
   }
 
   if (resolvedCategory === "stage" || resolvedCategory === "dance") {
-    const pad = Math.min(object.width, object.height) * 0.06;
+    const pad = Math.min(innerWidth, innerHeight) * 0.08;
 
     return (
-      <>
+      <g pointerEvents="none">
         <rect
-          x={object.x + pad}
-          y={object.y + pad}
-          width={Math.max(0, object.width - pad * 2)}
-          height={Math.max(0, object.height - pad * 2)}
+          x={innerX + pad}
+          y={innerY + pad}
+          width={Math.max(0, innerWidth - pad * 2)}
+          height={Math.max(0, innerHeight - pad * 2)}
           rx={pad * 0.75}
           fill={object.accent}
           opacity="0.75"
         />
         <path
-          d={`M ${object.x + pad * 1.5} ${object.y + object.height - pad} C ${
-            object.x + object.width / 2
-          } ${object.y + object.height + pad * 0.8} ${object.x + object.width - pad * 1.5} ${
-            object.y + object.height - pad
-          }`}
+          d={`M ${innerX + pad * 1.5} ${innerY + innerHeight - pad} C ${innerX + innerWidth / 2
+            } ${innerY + innerHeight + pad * 0.8} ${innerX + innerWidth - pad * 1.5} ${innerY + innerHeight - pad
+            }`}
           fill="none"
           stroke={object.stroke}
           strokeWidth={Math.max(0.35, pad * 0.12)}
         />
-      </>
+      </g>
     );
   }
 
@@ -1437,27 +1966,50 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
     resolvedCategory === "dining" ||
     resolvedCategory === "dj"
   ) {
+    const bodyY = innerY + innerHeight * 0.18;
+    const bodyHeight = innerHeight * 0.56;
+
     return (
-      <>
+      <g pointerEvents="none">
         <rect
-          x={object.x + object.width * 0.08}
-          y={object.y + object.height * 0.24}
-          width={object.width * 0.84}
-          height={object.height * 0.44}
-          rx="1"
+          x={innerX + innerWidth * 0.04}
+          y={bodyY}
+          width={innerWidth * 0.92}
+          height={bodyHeight}
+          rx={Math.max(0.8, innerWidth * 0.06)}
           fill={object.accent}
           stroke={object.stroke}
-          strokeWidth="0.25"
+          strokeWidth={Math.max(0.2, innerWidth * 0.03)}
+        />
+        <rect
+          x={innerX + innerWidth * 0.08}
+          y={innerY + innerHeight * 0.08}
+          width={innerWidth * 0.18}
+          height={innerHeight * 0.34}
+          rx={Math.max(0.6, innerWidth * 0.04)}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={Math.max(0.15, innerWidth * 0.025)}
+        />
+        <rect
+          x={innerX + innerWidth * 0.74}
+          y={innerY + innerHeight * 0.08}
+          width={innerWidth * 0.18}
+          height={innerHeight * 0.34}
+          rx={Math.max(0.6, innerWidth * 0.04)}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={Math.max(0.15, innerWidth * 0.025)}
         />
         <line
-          x1={object.x + object.width / 2}
-          x2={object.x + object.width / 2}
-          y1={object.y + object.height * 0.25}
-          y2={object.y + object.height * 0.7}
+          x1={innerX + innerWidth / 2}
+          x2={innerX + innerWidth / 2}
+          y1={bodyY + bodyHeight * 0.12}
+          y2={bodyY + bodyHeight * 0.88}
           stroke={object.stroke}
-          strokeWidth="0.25"
+          strokeWidth={Math.max(0.15, innerWidth * 0.025)}
         />
-      </>
+      </g>
     );
   }
 
@@ -1467,116 +2019,120 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
     resolvedCategory === "decor" ||
     resolvedCategory === "mandap"
   ) {
-    const dotCount = resolvedCategory === "mandap" ? 10 : 7;
+    const framePad = Math.min(innerWidth, innerHeight) * 0.08;
 
     return (
-      <>
-        {Array.from({ length: dotCount }).map((_, index) => {
-            const cx =
-              object.x +
-              ((index + 0.7) / (resolvedCategory === "mandap" ? 10.4 : 7.4)) *
-                object.width;
-            const cy =
-              object.y + object.height * (index % 2 === 0 ? 0.32 : 0.68);
-
-            return (
-              <circle
-                key={index}
-                cx={cx}
-                cy={cy}
-                r={Math.max(0.35, Math.min(object.width, object.height) * 0.11)}
-                fill={index % 2 === 0 ? "#fff7cc" : object.accent}
-                stroke={object.stroke}
-                strokeWidth="0.18"
-              />
-            );
-          },
-        )}
-      </>
+      <g pointerEvents="none">
+        <rect
+          x={innerX + framePad}
+          y={innerY + framePad}
+          width={innerWidth - framePad * 2}
+          height={innerHeight - framePad * 2}
+          rx={Math.max(0.6, framePad * 0.5)}
+          fill={object.accent}
+          stroke={object.stroke}
+          strokeWidth={Math.max(0.2, framePad * 0.15)}
+          opacity="0.9"
+        />
+        <rect
+          x={innerX + framePad * 2.2}
+          y={innerY + framePad * 2.2}
+          width={innerWidth - framePad * 4.4}
+          height={innerHeight - framePad * 4.4}
+          rx={Math.max(0.4, framePad * 0.35)}
+          fill={object.fill}
+          stroke={object.stroke}
+          strokeWidth={Math.max(0.15, framePad * 0.1)}
+          opacity="0.85"
+        />
+      </g>
     );
   }
 
   if (resolvedCategory === "aisle") {
-    const pad = Math.min(object.width, object.height) * 0.08;
+    const pad = Math.min(innerWidth, innerHeight) * 0.08;
 
     return (
-      <>
+      <g pointerEvents="none">
         <line
-          x1={object.x + object.width / 2}
-          x2={object.x + object.width / 2}
-          y1={object.y + pad}
-          y2={object.y + object.height - pad}
+          x1={innerX + innerWidth / 2}
+          x2={innerX + innerWidth / 2}
+          y1={innerY + pad}
+          y2={innerY + innerHeight - pad}
           stroke={object.stroke}
           strokeDasharray={`${pad * 0.8} ${pad * 0.8}`}
           strokeWidth={Math.max(0.35, pad * 0.12)}
         />
         <circle
-          cx={object.x + object.width / 2}
-          cy={object.y + object.height / 2}
+          cx={innerX + innerWidth / 2}
+          cy={innerY + innerHeight / 2}
           r={Math.max(0.8, pad * 0.35)}
           fill={object.stroke}
         />
-      </>
+      </g>
     );
   }
 
   return (
     <rect
-      x={object.x + object.width * 0.12}
-      y={object.y + object.height * 0.12}
-      width={object.width * 0.76}
-      height={object.height * 0.76}
-      rx="0.6"
+      x={innerX}
+      y={innerY}
+      width={innerWidth}
+      height={innerHeight}
+      rx={Math.max(0.6, Math.min(innerWidth, innerHeight) * 0.08)}
       fill={object.accent}
       stroke={object.stroke}
-      strokeWidth="0.25"
-      opacity="0.85"
+      strokeWidth={Math.max(0.2, Math.min(innerWidth, innerHeight) * 0.03)}
+      opacity="0.9"
+      pointerEvents="none"
     />
   );
 }
 
 function SnapshotLegend({
   objects,
-  y,
+  legendTop,
   venueLength,
   venueWidth,
   overlapIds,
 }: {
   objects: PlannerObject[];
-  y: number;
+  legendTop: number;
   venueLength: number;
   venueWidth: number;
   overlapIds: Set<string>;
 }) {
-  const legendTop = venueWidth + 1;
-  const rowGap = 4.5;
+  const legendHeight =
+    SNAPSHOT_LEGEND_HEADER_HEIGHT +
+    objects.length * SNAPSHOT_LEGEND_ROW_GAP +
+    SNAPSHOT_LEGEND_PADDING;
 
   return (
     <g data-snapshot-only="true" display="none" opacity="0">
       <rect
         x="0"
         y={legendTop}
-        width={venueLength}
-        height={14 + objects.length * rowGap}
+        width={CANVAS_VIEW_SIZE}
+        height={legendHeight}
         fill="#ffffff"
         stroke="#d8d1c3"
-        strokeWidth="0.25"
+        strokeWidth="2"
       />
       <text
-        x="2"
-        y={legendTop + 4}
+        x="16"
+        y={legendTop + 28}
         fontFamily="Arial, sans-serif"
-        fontSize="2"
+        fontSize="24"
         fontWeight="700"
         fill="#1f2520"
       >
         AI layout reference details
       </text>
       <text
-        x="2"
-        y={legendTop + 8}
+        x="16"
+        y={legendTop + 56}
         fontFamily="Arial, sans-serif"
-        fontSize="1.45"
+        fontSize="18"
         fill="#4b5563"
       >
         Venue: {venueLength} ft x {venueWidth} ft. Objects are numbered on the
@@ -1585,10 +2141,10 @@ function SnapshotLegend({
       {objects.map((object, index) => (
         <text
           key={object.id}
-          x="2"
-          y={y + index * rowGap}
+          x="16"
+          y={legendTop + SNAPSHOT_LEGEND_HEADER_HEIGHT + index * SNAPSHOT_LEGEND_ROW_GAP}
           fontFamily="Arial, sans-serif"
-          fontSize="1.55"
+          fontSize="20"
           fill={overlapIds.has(object.id) ? "#b91c1c" : "#1f2937"}
         >
           {index + 1}. {object.label}: {formatNumber(object.width)} ft x{" "}

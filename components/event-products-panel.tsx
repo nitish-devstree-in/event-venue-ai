@@ -49,6 +49,7 @@ type EventProductsPanelProps = {
   onPlaceOnCanvas: (productMasterId: number, quantity: number) => void;
   onRemoveFromCanvas: (productMasterId: number) => void;
   onContinue?: () => void;
+  isContinuing?: boolean;
 };
 
 export const EventProductsPanel = React.forwardRef<
@@ -65,6 +66,7 @@ export const EventProductsPanel = React.forwardRef<
     onPlaceOnCanvas,
     onRemoveFromCanvas,
     onContinue,
+    isContinuing = false,
   },
   ref,
 ) {
@@ -391,11 +393,20 @@ export const EventProductsPanel = React.forwardRef<
               size="lg"
               className="w-full bg-[#315c4b] text-white hover:bg-[#25483b]"
               onClick={onContinue}
-              disabled={eventProducts.length === 0 && canvasPlacements.length === 0}
+              disabled={isContinuing || (eventProducts.length === 0 && canvasPlacements.length === 0)}
               title="Continue to event details"
             >
-              Continue to generate
-              <ChevronRight className="size-4" />
+              {isContinuing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin text-white" />
+                  Saving layout...
+                </>
+              ) : (
+                <>
+                  Continue to generate
+                  <ChevronRight className="size-4" />
+                </>
+              )}
             </Button>
           ) : null}
         </div>
