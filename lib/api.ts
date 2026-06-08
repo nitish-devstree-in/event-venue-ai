@@ -9,7 +9,7 @@ export type EventRecord = {
   client_phone: string;
   status: string;
   created_at: string;
-  updated_at: string;
+  updated_at: string | null;
 };
 
 export type CreateEventPayload = {
@@ -25,9 +25,11 @@ export type VenueRecord = {
   name: string | null;
   width_ft: number | null;
   length_ft: number | null;
+  venue_image_url?: string | null;
+  layout_2d_url?: string | null;
   image_url?: string | null;
   created_at?: string;
-  updated_at?: string;
+  updated_at?: string | null;
 };
 
 export type UploadVenuePayload = {
@@ -85,6 +87,10 @@ async function apiRequest<T>(
 
 export async function listEvents(): Promise<EventRecord[]> {
   return apiRequest<EventRecord[]>("/events");
+}
+
+export async function getEvent(eventId: number): Promise<FullEventRecord> {
+  return apiRequest<FullEventRecord>(`/events/${eventId}`);
 }
 
 export async function createEvent(
@@ -161,7 +167,11 @@ export async function updateEventDetails(
 }
 
 export async function getVenue(eventId: number): Promise<VenueRecord> {
-  return apiRequest<VenueRecord>(`/events/${eventId}/venue`);
+  const venue = await apiRequest<VenueRecord>(`/events/${eventId}/venue`);
+  return {
+    ...venue,
+    image_url: venue.venue_image_url ?? venue.image_url ?? null,
+  };
 }
 
 export async function uploadVenue(
@@ -393,6 +403,13 @@ export type ArrangementRecord = {
   is_final: boolean;
   created_at: string;
   updated_at: string;
+};
+
+export type FullEventRecord = EventRecord & {
+  venue: VenueRecord | null;
+  event_details: EventDetailsRecord | null;
+  products: EventProductRecord[];
+  arrangements: ArrangementRecord[];
 };
 
 export async function listArrangements(

@@ -9,21 +9,24 @@ import {
   type EventRecord,
   type VenueRecord,
 } from "@/lib/api";
+import { normalizeVenue } from "@/lib/event-restore";
 import { getDraggedImageFile, isImageFile } from "@/lib/image-file";
 import { useObjectUrl } from "@/lib/use-object-url";
 import { cn } from "@/lib/utils";
 
 type VenueUploadScreenProps = {
   event: EventRecord;
+  existingVenue?: VenueRecord | null;
   onBack: () => void;
   onUploaded: (payload: {
     venue: VenueRecord;
-    venueImageFile: File;
+    venueImageFile?: File;
   }) => void;
 };
 
 export function VenueUploadScreen({
   event,
+  existingVenue,
   onBack,
   onUploaded,
 }: VenueUploadScreenProps) {
@@ -36,7 +39,31 @@ export function VenueUploadScreen({
   const [submitting, setSubmitting] = React.useState(false);
   const [dragActive, setDragActive] = React.useState(false);
 
-  const venueImageUrl = useObjectUrl(venueImageFile);
+  const normalizedExistingVenue = existingVenue
+    ? normalizeVenue(existingVenue)
+    : null;
+  const existingImageUrl =
+    normalizedExistingVenue?.image_url ??
+    normalizedExistingVenue?.venue_image_url ??
+    null;
+
+  React.useEffect(() => {
+    if (!normalizedExistingVenue) return;
+
+    setVenueName(normalizedExistingVenue.name ?? "");
+    setLengthFt(
+      normalizedExistingVenue.length_ft != null
+        ? String(normalizedExistingVenue.length_ft)
+        : "",
+    );
+    setWidthFt(
+      normalizedExistingVenue.width_ft != null
+        ? String(normalizedExistingVenue.width_ft)
+        : "",
+    );
+  }, [normalizedExistingVenue]);
+
+  const venueImageUrl = useObjectUrl(venueImageFile) ?? existingImageUrl;
 
   const acceptFile = React.useCallback((file: File | null | undefined) => {
     if (!isImageFile(file)) {
@@ -89,6 +116,14 @@ export function VenueUploadScreen({
     }
 
     acceptFile(file);
+  };
+
+  const handleContinueWithExisting = () => {
+    if (!normalizedExistingVenue) return;
+
+    onUploaded({
+      venue: normalizedExistingVenue,
+    });
   };
 
   const handleSubmit = async (eventForm: React.FormEvent) => {
@@ -148,9 +183,15 @@ export function VenueUploadScreen({
             </p>
             <h1 className="mt-2 text-2xl font-semibold">{event.title}</h1>
             <p className="mt-2 text-sm text-[#596153]">
-              Upload a photo or floor plan for{" "}
-              <span className="font-medium">{event.client_name}</span>. Once saved,
-              the 2D layout planner will open.
+              {normalizedExistingVenue
+                ? "This event already has a venue on file. Continue with it or upload a new image."
+                : (
+                  <>
+                    Upload a photo or floor plan for{" "}
+                    <span className="font-medium">{event.client_name}</span>. Once saved,
+                    the 2D layout planner will open.
+                  </>
+                )}
             </p>
           </div>
         </div>
@@ -267,22 +308,38 @@ export function VenueUploadScreen({
             <div className="text-xs text-[#6f756a]">
               {venueImageFile
                 ? `Selected: ${venueImageFile.name}`
-                : "Venue image is required."}
+                : normalizedExistingVenue
+                  ? "Using saved venue image."
+                  : "Venue image is required."}
             </div>
-            <Button
-              type="submit"
-              className="bg-[#315c4b] text-white hover:bg-[#25483b]"
-              disabled={!venueImageFile || submitting}
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="animate-spin" />
-                  Uploading...
-                </>
-              ) : (
-                "Upload & continue"
-              )}
-            </Button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {normalizedExistingVenue ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={submitting}
+                  onClick={handleContinueWithExisting}
+                >
+                  Continue with existing venue
+                </Button>
+              ) : null}
+              <Button
+                type="submit"
+                className="bg-[#315c4b] text-white hover:bg-[#25483b]"
+                disabled={!venueImageFile || submitting}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="animate-spin" />
+                    Uploading...
+                  </>
+                ) : normalizedExistingVenue ? (
+                  "Upload new venue"
+                ) : (
+                  "Upload & continue"
+                )}
+              </Button>
+            </div>
           </div>
         </form>
       </div>

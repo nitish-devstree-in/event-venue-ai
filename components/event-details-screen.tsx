@@ -9,13 +9,15 @@ import {
   updateEvent,
   updateEventDetails,
   type EventDetailsPayload,
+  type EventDetailsRecord,
   type EventRecord,
 } from "@/lib/api";
 
 type EventDetailsScreenProps = {
   event: EventRecord;
+  initialDetails?: EventDetailsRecord | null;
   onBack: () => void;
-  onSaved: (event: EventRecord) => void;
+  onSaved: (event: EventRecord, details: EventDetailsRecord | null) => void;
   onContinue: () => void;
 };
 
@@ -52,6 +54,7 @@ const STATUS_OPTIONS = [
 
 export function EventDetailsScreen({
   event,
+  initialDetails,
   onBack,
   onSaved,
   onContinue,
@@ -71,7 +74,9 @@ export function EventDetailsScreen({
     guest_count: "150",
     extra_notes: "",
   });
-  const [hasExistingDetails, setHasExistingDetails] = React.useState(false);
+  const [hasExistingDetails, setHasExistingDetails] = React.useState(
+    initialDetails != null,
+  );
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -84,6 +89,23 @@ export function EventDetailsScreen({
       status: event.status,
     });
   }, [event]);
+
+  React.useEffect(() => {
+    if (!initialDetails) return;
+
+    setPreferences({
+      theme: initialDetails.theme ?? "",
+      color_palette: initialDetails.color_palette ?? "",
+      lighting_type: initialDetails.lighting_type ?? "warm",
+      lighting_notes: initialDetails.lighting_notes ?? "",
+      guest_count:
+        initialDetails.guest_count != null
+          ? String(initialDetails.guest_count)
+          : "150",
+      extra_notes: initialDetails.extra_notes ?? "",
+    });
+    setHasExistingDetails(true);
+  }, [initialDetails]);
 
   const updateEventField = <K extends keyof EventFormState>(
     key: K,
@@ -141,7 +163,10 @@ export function EventDetailsScreen({
 
       await savePreferences(buildDetailsPayload());
 
-      onSaved(updatedEvent);
+      onSaved(
+        updatedEvent,
+        buildSavedDetails(event.id, initialDetails, buildDetailsPayload()),
+      );
 
       if (continueAfterSave) {
         onContinue();
@@ -315,6 +340,25 @@ export function EventDetailsScreen({
       </div>
     </main>
   );
+}
+
+function buildSavedDetails(
+  eventId: number,
+  initialDetails: EventDetailsRecord | null | undefined,
+  payload: EventDetailsPayload,
+): EventDetailsRecord {
+  return {
+    id: initialDetails?.id,
+    event_id: initialDetails?.event_id ?? eventId,
+    theme: payload.theme ?? null,
+    color_palette: payload.color_palette ?? null,
+    lighting_type: payload.lighting_type ?? null,
+    lighting_notes: payload.lighting_notes ?? null,
+    guest_count: payload.guest_count ?? null,
+    extra_notes: payload.extra_notes ?? null,
+    created_at: initialDetails?.created_at,
+    updated_at: initialDetails?.updated_at,
+  };
 }
 
 function FormField({

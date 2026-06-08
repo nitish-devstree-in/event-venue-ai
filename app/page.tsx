@@ -10,11 +10,15 @@ import { EventDetailsScreen } from "@/components/event-details-screen";
 import { VenueUploadScreen } from "@/components/venue-upload-screen";
 import { Button } from "@/components/ui/button";
 import {
-  getVenue,
-  listEvents,
+  getEvent,
+  type EventDetailsRecord,
   type EventRecord,
   type VenueRecord,
 } from "@/lib/api";
+import {
+  applyFullEventState,
+  normalizeVenue,
+} from "@/lib/event-restore";
 import {
   clearAppSession,
   loadAppSession,
@@ -29,8 +33,12 @@ type VenueSession = {
   venueImageFile?: File;
 };
 
-function AppBootShell() {
-  return <main className="min-h-screen bg-[#f6f4ef]" aria-hidden="true" />;
+function AppBootShell({ message = "Loading..." }: { message?: string }) {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-[#f6f4ef] text-[#596153]">
+      <p className="text-sm font-medium">{message}</p>
+    </main>
+  );
 }
 
 export default function Home() {
@@ -40,10 +48,18 @@ export default function Home() {
   const [selectedEvent, setSelectedEvent] = React.useState<EventRecord | null>(
     null,
   );
+  const [eventDetails, setEventDetails] =
+    React.useState<EventDetailsRecord | null>(null);
+  const [loadingEventId, setLoadingEventId] = React.useState<number | null>(
+    null,
+  );
   const [venueSession, setVenueSession] = React.useState<VenueSession | null>(
     null,
   );
   const [plan, setPlan] = React.useState<EventLayoutPlannerPlan | null>(null);
+  const [restoredPlanObjects, setRestoredPlanObjects] = React.useState<
+    EventLayoutPlannerPlan["objects"] | undefined
+  >(undefined);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -53,28 +69,16 @@ export default function Home() {
 
       if (saved) {
         try {
-          const events = await listEvents();
-          const event = events.find((item) => item.id === saved.eventId);
+          const fullEvent = await getEvent(saved.eventId);
+          const restored = applyFullEventState(fullEvent);
 
-          if (event && !cancelled) {
-            setSelectedEvent(event);
-            setStep(saved.step);
-            setPlan(saved.plan ?? null);
-
-            if (saved.step !== "venue" && saved.step !== "events") {
-              try {
-                const venue = await getVenue(event.id);
-                if (!cancelled) {
-                  setVenueSession({ venue });
-                }
-              } catch {
-                if (saved.venue && !cancelled) {
-                  setVenueSession({ venue: saved.venue });
-                }
-              }
-            }
-          } else if (!cancelled) {
-            clearAppSession();
+          if (!cancelled) {
+            setSelectedEvent(restored.event);
+            setEventDetails(restored.eventDetails);
+            setVenueSession(restored.venueSession);
+            setPlan(restored.plan ?? saved.plan ?? null);
+            setRestoredPlanObjects(restored.plan?.objects);
+            setStep(saved.step === "events" ? "venue" : saved.step);
           }
         } catch {
           if (!cancelled) clearAppSession();
@@ -108,27 +112,50 @@ export default function Home() {
   }, [isBooted, plan, selectedEvent, step, venueSession?.venue]);
 
   const localVenueImageUrl = useObjectUrl(venueSession?.venueImageFile);
-  const venueImageUrl =
-    localVenueImageUrl ?? venueSession?.venue.image_url ?? null;
 
   const resetToEvents = () => {
     setStep("events");
     setSelectedEvent(null);
+    setEventDetails(null);
     setVenueSession(null);
     setPlan(null);
+    setRestoredPlanObjects(undefined);
     clearAppSession();
   };
 
-  const selectEvent = (event: EventRecord) => {
-    setSelectedEvent(event);
-    setVenueSession(null);
-    setPlan(null);
-    setStep("venue");
+  const selectEvent = async (event: EventRecord) => {
+    setLoadingEventId(event.id);
+
+    try {
+      const fullEvent = await getEvent(event.id);
+      const restored = applyFullEventState(fullEvent);
+
+      setSelectedEvent(restored.event);
+      setEventDetails(restored.eventDetails);
+      setVenueSession(restored.venueSession);
+      setPlan(restored.plan);
+      setRestoredPlanObjects(restored.plan?.objects);
+      setStep(restored.step);
+    } catch {
+      setSelectedEvent(event);
+      setEventDetails(null);
+      setVenueSession(null);
+      setPlan(null);
+      setRestoredPlanObjects(undefined);
+      setStep("venue");
+    } finally {
+      setLoadingEventId(null);
+    }
   };
 
   const handleVenueUploaded = (payload: VenueSession) => {
     setVenueSession(payload);
-    setPlan(null);
+
+    if (payload.venueImageFile) {
+      setPlan(null);
+      setRestoredPlanObjects(undefined);
+    }
+
     setStep("details");
   };
 
@@ -148,14 +175,21 @@ export default function Home() {
     return <AppBootShell />;
   }
 
+  if (loadingEventId != null) {
+    return <AppBootShell message="Loading event details..." />;
+  }
+
   if (step === "events") {
-    return <EventsList onSelectEvent={selectEvent} />;
+    return <EventsList onSelectEvent={(event) => void selectEvent(event)} />;
   }
 
   if (step === "venue" && selectedEvent) {
     return (
       <VenueUploadScreen
         event={selectedEvent}
+        existingVenue={
+          venueSession ? normalizeVenue(venueSession.venue) : null
+        }
         onBack={resetToEvents}
         onUploaded={handleVenueUploaded}
       />
@@ -166,8 +200,12 @@ export default function Home() {
     return (
       <EventDetailsScreen
         event={selectedEvent}
+        initialDetails={eventDetails}
         onBack={() => setStep("venue")}
-        onSaved={setSelectedEvent}
+        onSaved={(updatedEvent, savedDetails) => {
+          setSelectedEvent(updatedEvent);
+          setEventDetails(savedDetails);
+        }}
         onContinue={() => setStep("layout")}
       />
     );
@@ -189,13 +227,14 @@ export default function Home() {
   }
 
   if (!selectedEvent || !venueSession) {
-    return <EventsList onSelectEvent={selectEvent} />;
+    return <EventsList onSelectEvent={(event) => void selectEvent(event)} />;
   }
 
-  const initialVenueLength =
-    venueSession.venue.length_ft ?? plan?.venue.lengthFt ?? 90;
-  const initialVenueWidth =
-    venueSession.venue.width_ft ?? plan?.venue.widthFt ?? 55;
+  const venue = normalizeVenue(venueSession.venue);
+  const initialVenueLength = venue.length_ft ?? plan?.venue.lengthFt ?? 90;
+  const initialVenueWidth = venue.width_ft ?? plan?.venue.widthFt ?? 55;
+  const venueImageUrl =
+    localVenueImageUrl ?? venue.image_url ?? venue.venue_image_url ?? null;
 
   return (
     <main className="flex min-h-screen flex-col bg-[#f6f4ef] text-[#1f2520]">
@@ -277,7 +316,7 @@ export default function Home() {
           eventId={selectedEvent.id}
           initialVenueLength={initialVenueLength}
           initialVenueWidth={initialVenueWidth}
-          initialPlanObjects={plan?.objects}
+          initialPlanObjects={restoredPlanObjects ?? plan?.objects}
           onPlanChange={setPlan}
           onContinue={() => setStep("generate")}
         />

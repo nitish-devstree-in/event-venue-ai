@@ -246,6 +246,13 @@ export function EventLayoutPlanner({
   const svgRef = React.useRef<SVGSVGElement | null>(null);
   const eventProductsRef = React.useRef<EventProductsPanelHandle | null>(null);
   const restoredPlanRef = React.useRef(false);
+  const initialObjectsRef = React.useRef(initialPlanObjects);
+  const skipPlanSyncRef = React.useRef(Boolean(initialPlanObjects?.length));
+
+  if (initialPlanObjects?.length && !initialObjectsRef.current?.length) {
+    initialObjectsRef.current = initialPlanObjects;
+    skipPlanSyncRef.current = true;
+  }
   const selectedIdSet = React.useMemo(
     () => new Set(selectedIds),
     [selectedIds],
@@ -338,7 +345,7 @@ export function EventLayoutPlanner({
   const venueTooSmallForCatalog = venueLength < 16 || venueWidth < 16;
 
   React.useEffect(() => {
-    if (!onPlanChange) return;
+    if (!onPlanChange || skipPlanSyncRef.current) return;
     onPlanChange({
       venue: {
         lengthFt: venueLength,
@@ -360,53 +367,57 @@ export function EventLayoutPlanner({
   }, [objects, onPlanChange, venueAreaSqFt, venueLength, venueWidth]);
 
   React.useEffect(() => {
+    const objectsToRestore = initialObjectsRef.current;
+
     if (
       restoredPlanRef.current ||
-      !initialPlanObjects?.length ||
+      !objectsToRestore?.length ||
       productTemplateMap.size === 0
     ) {
       return;
     }
 
     restoredPlanRef.current = true;
-    setObjects(
-      initialPlanObjects.flatMap((savedObject) => {
-        const template = productTemplateMap.get(savedObject.productMasterId);
-        if (!template) return [];
 
-        const fixed = resolveObjectDimensions(template);
-        const limits = getLimitsForTemplate(template);
-        const size = clampObjectSize(
-          savedObject.width,
-          savedObject.height,
-          limits,
-        );
+    const restoredObjects = objectsToRestore.flatMap((savedObject) => {
+      const template = productTemplateMap.get(savedObject.productMasterId);
+      if (!template) return [];
 
-        return [
-          {
-            ...template,
-            ...size,
-            id: savedObject.id,
-            x: clamp(
-              savedObject.x,
-              0,
-              Math.max(0, venueLength - size.width),
-            ),
-            y: clamp(
-              savedObject.y,
-              0,
-              Math.max(0, venueWidth - size.height),
-            ),
-            rotation: savedObject.rotation,
-          },
-        ];
-      }),
-    );
+      const limits = getLimitsForTemplate(template);
+      const size = clampObjectSize(
+        savedObject.width,
+        savedObject.height,
+        limits,
+      );
+
+      return [
+        {
+          ...template,
+          ...size,
+          id: savedObject.id,
+          x: clamp(
+            savedObject.x,
+            0,
+            Math.max(0, venueLength - size.width),
+          ),
+          y: clamp(
+            savedObject.y,
+            0,
+            Math.max(0, venueWidth - size.height),
+          ),
+          rotation: savedObject.rotation,
+        },
+      ];
+    });
+
+    skipPlanSyncRef.current = false;
+
+    if (restoredObjects.length > 0) {
+      setObjects(restoredObjects);
+    }
   }, [
-    initialPlanObjects,
     productTemplateMap,
     getLimitsForTemplate,
-    resolveObjectDimensions,
     venueLength,
     venueWidth,
   ]);
