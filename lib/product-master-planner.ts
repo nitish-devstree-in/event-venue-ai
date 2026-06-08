@@ -89,7 +89,8 @@ const CATEGORY_STYLES: Record<
   },
 };
 
-const DEFAULT_DIMENSIONS = { width: 6, height: 6 };
+const DEFAULT_DIMENSIONS = { width: 8, height: 8 };
+const MIN_PLACEMENT_SIDE_FT = 8;
 const DEFAULT_STYLE = {
   fill: "#e8e4dc",
   stroke: "#6b715f",
@@ -146,6 +147,29 @@ export function getCatalogDimensions(
   return getDefaultDimensions(category, productName);
 }
 
+export function getInitialPlacementDimensions(
+  category: string | null,
+  productName: string | null | undefined,
+  venueLength: number,
+  venueWidth: number,
+) {
+  const catalog = getCatalogDimensions(category, productName);
+  const minSide = Math.min(catalog.width, catalog.height);
+
+  if (minSide >= MIN_PLACEMENT_SIDE_FT) {
+    return catalog;
+  }
+
+  const scale = MIN_PLACEMENT_SIDE_FT / minSide;
+  const limits = getResizeLimits(category, productName, venueLength, venueWidth);
+
+  return clampObjectSize(
+    catalog.width * scale,
+    catalog.height * scale,
+    limits,
+  );
+}
+
 export function productFitsVenue(
   width: number,
   height: number,
@@ -168,8 +192,8 @@ export function getResizeLimits(
     catalogHeight: catalog.height,
     minWidth: 2,
     minHeight: 2,
-    maxWidth: Math.min(catalog.width, venueLength),
-    maxHeight: Math.min(catalog.height, venueWidth),
+    maxWidth: venueLength,
+    maxHeight: venueWidth,
   };
 }
 

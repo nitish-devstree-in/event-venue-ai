@@ -77,7 +77,9 @@ export function EventDetailsScreen({
   const [hasExistingDetails, setHasExistingDetails] = React.useState(
     initialDetails != null,
   );
-  const [submitting, setSubmitting] = React.useState(false);
+  const [savingAction, setSavingAction] = React.useState<
+    "save" | "continue" | null
+  >(null);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -149,7 +151,7 @@ export function EventDetailsScreen({
   };
 
   const handleSave = async (continueAfterSave = false) => {
-    setSubmitting(true);
+    setSavingAction(continueAfterSave ? "continue" : "save");
     setError(null);
 
     try {
@@ -178,7 +180,7 @@ export function EventDetailsScreen({
           : "Failed to save event details.",
       );
     } finally {
-      setSubmitting(false);
+      setSavingAction(null);
     }
   };
 
@@ -309,10 +311,10 @@ export function EventDetailsScreen({
               <Button
                 type="button"
                 variant="outline"
-                disabled={submitting}
+                disabled={savingAction !== null}
                 onClick={() => void handleSave(false)}
               >
-                {submitting ? (
+                {savingAction === "save" ? (
                   <>
                     <Loader2 className="animate-spin" />
                     Saving...
@@ -324,9 +326,9 @@ export function EventDetailsScreen({
               <Button
                 type="submit"
                 className="bg-[#315c4b] text-white hover:bg-[#25483b]"
-                disabled={submitting}
+                disabled={savingAction !== null}
               >
-                {submitting ? (
+                {savingAction === "continue" ? (
                   <>
                     <Loader2 className="animate-spin" />
                     Saving...

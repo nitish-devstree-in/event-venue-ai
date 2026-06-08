@@ -21,6 +21,8 @@ type ArrangementGenerationPanelProps = {
   eventId: number;
   eventTitle: string;
   layoutSummary?: string;
+  autoGenerateOnMount?: boolean;
+  onAutoGenerateHandled?: () => void;
   onBack: () => void;
 };
 
@@ -39,6 +41,8 @@ export function ArrangementGenerationPanel({
   eventId,
   eventTitle,
   layoutSummary,
+  autoGenerateOnMount = false,
+  onAutoGenerateHandled,
   onBack,
 }: ArrangementGenerationPanelProps) {
   const [history, setHistory] = React.useState<ArrangementRecord[]>([]);
@@ -51,6 +55,13 @@ export function ArrangementGenerationPanel({
   const [clientFeedback, setClientFeedback] = React.useState("");
   const [polling, setPolling] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [fullscreenImageUrl, setFullscreenImageUrl] = React.useState<
+    string | null
+  >(null);
+  const autoGenerateStartedRef = React.useRef(false);
+  const autoGenerateOnMountRef = React.useRef(autoGenerateOnMount);
+  autoGenerateOnMountRef.current = autoGenerateOnMount;
+  const handleGenerateRef = React.useRef<() => Promise<void>>(async () => {});
 
   const loadHistory = React.useCallback(async () => {
     setLoadingHistory(true);
@@ -60,7 +71,12 @@ export function ArrangementGenerationPanel({
       const data = await listArrangements(eventId);
       const sorted = [...data].sort((a, b) => b.version - a.version);
       setHistory(sorted);
-      setActiveArrangement((current) => current ?? sorted[0] ?? null);
+      setActiveArrangement((current) => {
+        if (autoGenerateOnMountRef.current) {
+          return current;
+        }
+        return current ?? sorted[0] ?? null;
+      });
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -124,7 +140,7 @@ export function ArrangementGenerationPanel({
     [eventId],
   );
 
-  const handleGenerate = async () => {
+  const handleGenerate = React.useCallback(async () => {
     setGenerating(true);
     setError(null);
 
@@ -146,7 +162,23 @@ export function ArrangementGenerationPanel({
     } finally {
       setGenerating(false);
     }
-  };
+  }, [eventId, loadHistory, pollArrangement]);
+
+  handleGenerateRef.current = handleGenerate;
+
+  React.useEffect(() => {
+    if (loadingHistory || !autoGenerateOnMount) {
+      return;
+    }
+
+    if (autoGenerateStartedRef.current) {
+      return;
+    }
+
+    autoGenerateStartedRef.current = true;
+    onAutoGenerateHandled?.();
+    void handleGenerateRef.current();
+  }, [autoGenerateOnMount, loadingHistory, onAutoGenerateHandled]);
 
   const handleRequestChanges = async () => {
     if (!activeArrangement) {
@@ -195,6 +227,11 @@ export function ArrangementGenerationPanel({
     PENDING_STATUSES.has(activeArrangement.status.toLowerCase()) &&
     !activeArrangement.result_image_url;
 
+  const isWorking = generating || polling || isPending;
+  const showResultImage = Boolean(activeArrangement?.result_image_url);
+  const showLoadingState =
+    isWorking || (autoGenerateOnMount && !showResultImage && !error);
+
   return (
     <main className="min-h-screen bg-[#f6f4ef] text-[#1f2520]">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-8">
@@ -220,7 +257,7 @@ export function ArrangementGenerationPanel({
             <div>
               <h2 className="text-sm font-semibold">Final arrangement</h2>
               <p className="text-xs text-[#6f756a]">
-                Creates an AI prompt and result image from your saved layout.
+                AI-generated visual from your saved layout.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -245,19 +282,10 @@ export function ArrangementGenerationPanel({
                 type="button"
                 className="bg-[#315c4b] text-white hover:bg-[#25483b]"
                 onClick={() => void handleGenerate()}
-                disabled={generating || polling || requestingChanges}
+                disabled={isWorking || requestingChanges}
               >
-                {generating ? (
-                  <>
-                    <Loader2 className="animate-spin" />
-                    Starting...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles />
-                    Generate arrangement
-                  </>
-                )}
+                <Sparkles />
+                Generate arrangement
               </Button>
             </div>
           </div>
@@ -268,8 +296,31 @@ export function ArrangementGenerationPanel({
             </div>
           ) : null}
 
-          {activeArrangement ? (
-            <div className="mt-4 space-y-4">
+          {loadingHistory || showLoadingState ? (
+            <div className="mt-4 flex min-h-[420px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#cfc6b6] bg-[#fbfaf7] p-6 text-center">
+              <Loader2 className="size-10 animate-spin text-[#315c4b]" />
+              <p className="text-base font-semibold text-[#1f2520]">
+                {loadingHistory
+                  ? "Preparing your arrangement..."
+                  : "Generating your arrangement..."}
+              </p>
+              {!loadingHistory ? (
+                <p className="max-w-md text-sm leading-relaxed text-[#596153]">
+                  Please keep this page open — your result will appear
+                  here automatically.
+                </p>
+              ) : null}
+              {activeArrangement && !loadingHistory ? (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <StatusBadge status={activeArrangement.status} />
+                  <span className="rounded-md bg-[#eef3ea] px-2 py-1 text-xs font-medium text-[#45614c]">
+                    Version {activeArrangement.version}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : showResultImage && activeArrangement?.result_image_url ? (
+            <div className="mt-4 space-y-3">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={activeArrangement.status} />
                 <span className="rounded-md bg-[#eef3ea] px-2 py-1 text-xs font-medium text-[#45614c]">
@@ -282,51 +333,36 @@ export function ArrangementGenerationPanel({
                 ) : null}
               </div>
 
-              {isPending || polling ? (
-                <div className="flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-[#cfc6b6] bg-[#fbfaf7] p-6 text-center">
-                  <Loader2 className="size-8 animate-spin text-[#315c4b]" />
-                  <p className="text-sm font-medium">
-                    Generating your arrangement...
-                  </p>
-                  <p className="max-w-md text-xs text-[#6f756a]">
-                    This may take a minute. Status updates automatically.
-                  </p>
-                </div>
-              ) : null}
-
-              {activeArrangement.arrangement_prompt ? (
-                <div className="rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-[#6b715f]">
-                    Arrangement prompt
-                  </p>
-                  <p className="mt-2 whitespace-pre-wrap text-sm text-[#4e594c]">
-                    {activeArrangement.arrangement_prompt}
-                  </p>
-                </div>
-              ) : null}
-
-              {activeArrangement.result_image_url ? (
-                <div className="overflow-hidden rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#6b715f]">
-                    Result image
-                  </p>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={activeArrangement.result_image_url}
-                    alt="Generated arrangement"
-                    className="mx-auto max-h-[520px] w-full rounded-md object-contain"
-                  />
-                </div>
-              ) : !isPending && !polling ? (
-                <div className="rounded-lg border border-dashed border-[#d1c8b9] bg-[#fbfaf7] px-3 py-6 text-center text-sm text-[#777d73]">
-                  No result image yet for this version.
-                </div>
-              ) : null}
+              <button
+                type="button"
+                onClick={() =>
+                  setFullscreenImageUrl(activeArrangement.result_image_url)
+                }
+                className="group block w-full overflow-hidden rounded-lg border border-[#d8d1c3] bg-[#fbfaf7] p-2 text-left transition hover:border-[#315c4b] hover:shadow-sm"
+                title="Click to view full screen"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={activeArrangement.result_image_url}
+                  alt="Generated arrangement"
+                  className="mx-auto max-h-[560px] w-full cursor-zoom-in rounded-md object-contain transition group-hover:opacity-95"
+                />
+                <p className="mt-2 text-center text-xs text-[#6f756a]">
+                  Click image to open full screen
+                </p>
+              </button>
             </div>
-          ) : loadingHistory ? (
-            <div className="mt-4 flex min-h-32 items-center justify-center text-sm text-[#596153]">
-              <Loader2 className="mr-2 size-4 animate-spin" />
-              Loading previous arrangements...
+          ) : activeArrangement ? (
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={activeArrangement.status} />
+                <span className="rounded-md bg-[#eef3ea] px-2 py-1 text-xs font-medium text-[#45614c]">
+                  Version {activeArrangement.version}
+                </span>
+              </div>
+              <div className="rounded-lg border border-dashed border-[#d1c8b9] bg-[#fbfaf7] px-3 py-8 text-center text-sm text-[#777d73]">
+                No result image yet for this version. Try generating again.
+              </div>
             </div>
           ) : (
             <div className="mt-4 rounded-lg border border-dashed border-[#d1c8b9] bg-[#fbfaf7] px-3 py-8 text-center text-sm text-[#777d73]">
@@ -380,7 +416,63 @@ export function ArrangementGenerationPanel({
         }}
         onSubmit={() => void handleRequestChanges()}
       />
+
+      {fullscreenImageUrl ? (
+        <FullscreenImageModal
+          imageUrl={fullscreenImageUrl}
+          onClose={() => setFullscreenImageUrl(null)}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function FullscreenImageModal({
+  imageUrl,
+  onClose,
+}: {
+  imageUrl: string;
+  onClose: () => void;
+}) {
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f1410]/95 p-4">
+      <button
+        type="button"
+        aria-label="Close full screen image"
+        className="absolute inset-0"
+        onClick={onClose}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="icon-sm"
+        className="absolute right-4 top-4 z-10 border-white/20 bg-black/40 text-white hover:bg-black/60"
+        onClick={onClose}
+      >
+        <X />
+      </Button>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={imageUrl}
+        alt="Generated arrangement full screen"
+        className="relative z-[1] max-h-full max-w-full object-contain"
+        onClick={(event) => event.stopPropagation()}
+      />
+    </div>
   );
 }
 

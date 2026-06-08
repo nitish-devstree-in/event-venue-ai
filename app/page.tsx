@@ -61,6 +61,8 @@ export default function Home() {
   const [restoredPlanObjects, setRestoredPlanObjects] = React.useState<
     EventLayoutPlannerPlan["objects"] | undefined
   >(undefined);
+  const [autoGenerateArrangement, setAutoGenerateArrangement] =
+    React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -172,6 +174,22 @@ export default function Home() {
     if (payload.venueImageFile) {
       setPlan(null);
       setRestoredPlanObjects(undefined);
+    } else {
+      const lengthFt = payload.venue.length_ft;
+      const widthFt = payload.venue.width_ft;
+
+      setPlan((current) =>
+        current && lengthFt != null && widthFt != null
+          ? {
+              ...current,
+              venue: {
+                lengthFt,
+                widthFt,
+                areaSqFt: lengthFt * widthFt,
+              },
+            }
+          : current,
+      );
     }
 
     setStep("details");
@@ -197,6 +215,7 @@ export default function Home() {
     const { resolvedPlan } = await refreshEventLayout(selectedEvent.id);
     setPlan(resolvedPlan);
     setRestoredPlanObjects(resolvedPlan?.objects);
+    setAutoGenerateArrangement(true);
     setStep("generate");
   };
 
@@ -277,6 +296,8 @@ export default function Home() {
             ? `${plan.objects.length} objects, ${plan.venue.areaSqFt} sq ft`
             : undefined
         }
+        autoGenerateOnMount={autoGenerateArrangement}
+        onAutoGenerateHandled={() => setAutoGenerateArrangement(false)}
         onBack={() => void handleBackToLayout()}
       />
     );
@@ -289,6 +310,8 @@ export default function Home() {
   const venue = normalizeVenue(venueSession.venue);
   const initialVenueLength = venue.length_ft ?? plan?.venue.lengthFt ?? 90;
   const initialVenueWidth = venue.width_ft ?? plan?.venue.widthFt ?? 55;
+  const displayVenueLength = venue.length_ft ?? plan?.venue.lengthFt ?? initialVenueLength;
+  const displayVenueWidth = venue.width_ft ?? plan?.venue.widthFt ?? initialVenueWidth;
   const venueImageUrl =
     localVenueImageUrl ?? venue.image_url ?? venue.venue_image_url ?? null;
 
@@ -324,8 +347,8 @@ export default function Home() {
                     "Venue"}
                 </div>
                 <div className="text-xs text-[#6f756a]">
-                  {venueSession.venue.length_ft && venueSession.venue.width_ft
-                    ? `${venueSession.venue.length_ft} × ${venueSession.venue.width_ft} ft`
+                  {displayVenueLength && displayVenueWidth
+                    ? `${displayVenueLength} × ${displayVenueWidth} ft`
                     : "You can change the image anytime."}
                 </div>
               </div>
@@ -368,7 +391,7 @@ export default function Home() {
 
       <div className="flex min-h-0 flex-1 flex-col">
         <EventLayoutPlanner
-          key={`${selectedEvent.id}-${venueSession.venue.id}-${initialVenueLength}-${initialVenueWidth}`}
+          key={`${selectedEvent.id}-${venueSession.venue.id}`}
           eventId={selectedEvent.id}
           initialVenueLength={initialVenueLength}
           initialVenueWidth={initialVenueWidth}

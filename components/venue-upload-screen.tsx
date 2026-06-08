@@ -5,6 +5,7 @@ import { ArrowLeft, Loader2, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
+  updateVenueMetadata,
   uploadVenue,
   type EventRecord,
   type VenueRecord,
@@ -47,23 +48,34 @@ export function VenueUploadScreen({
     normalizedExistingVenue?.venue_image_url ??
     null;
 
-  React.useEffect(() => {
-    if (!normalizedExistingVenue) return;
+  const existingVenueId = existingVenue?.id ?? null;
 
-    setVenueName(normalizedExistingVenue.name ?? "");
+  React.useEffect(() => {
+    if (!existingVenue) return;
+
+    setVenueName(existingVenue.name ?? "");
     setLengthFt(
-      normalizedExistingVenue.length_ft != null
-        ? String(normalizedExistingVenue.length_ft)
-        : "",
+      existingVenue.length_ft != null ? String(existingVenue.length_ft) : "",
     );
     setWidthFt(
-      normalizedExistingVenue.width_ft != null
-        ? String(normalizedExistingVenue.width_ft)
-        : "",
+      existingVenue.width_ft != null ? String(existingVenue.width_ft) : "",
     );
-  }, [normalizedExistingVenue]);
+  }, [
+    existingVenueId,
+    existingVenue?.name,
+    existingVenue?.length_ft,
+    existingVenue?.width_ft,
+  ]);
 
   const venueImageUrl = useObjectUrl(venueImageFile) ?? existingImageUrl;
+
+  const parsedLength = lengthFt.trim() ? Number(lengthFt) : null;
+  const parsedWidth = widthFt.trim() ? Number(widthFt) : null;
+  const hasValidDimensions =
+    (parsedLength == null ||
+      (Number.isFinite(parsedLength) && parsedLength > 0)) &&
+    (parsedWidth == null ||
+      (Number.isFinite(parsedWidth) && parsedWidth > 0));
 
   const acceptFile = React.useCallback((file: File | null | undefined) => {
     if (!isImageFile(file)) {
@@ -118,12 +130,62 @@ export function VenueUploadScreen({
     acceptFile(file);
   };
 
-  const handleContinueWithExisting = () => {
+  const handleContinueWithExisting = async () => {
     if (!normalizedExistingVenue) return;
 
-    onUploaded({
-      venue: normalizedExistingVenue,
-    });
+    const parsedLength = lengthFt.trim() ? Number(lengthFt) : undefined;
+    const parsedWidth = widthFt.trim() ? Number(widthFt) : undefined;
+
+    if (
+      parsedLength != null &&
+      (!Number.isFinite(parsedLength) || parsedLength <= 0)
+    ) {
+      setError("Length must be a positive number.");
+      return;
+    }
+    if (
+      parsedWidth != null &&
+      (!Number.isFinite(parsedWidth) || parsedWidth <= 0)
+    ) {
+      setError("Width must be a positive number.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    const nextVenue: VenueRecord = {
+      ...normalizedExistingVenue,
+      name: venueName.trim() || normalizedExistingVenue.name,
+      length_ft: parsedLength ?? normalizedExistingVenue.length_ft,
+      width_ft: parsedWidth ?? normalizedExistingVenue.width_ft,
+    };
+
+    try {
+      let savedVenue = nextVenue;
+
+      try {
+        savedVenue = normalizeVenue(
+          await updateVenueMetadata(event.id, {
+            name: nextVenue.name ?? undefined,
+            length_ft: nextVenue.length_ft ?? undefined,
+            width_ft: nextVenue.width_ft ?? undefined,
+          }),
+        );
+      } catch {
+        // Keep local edits when the API does not support metadata-only updates.
+      }
+
+      onUploaded({ venue: savedVenue });
+    } catch (continueError) {
+      setError(
+        continueError instanceof Error
+          ? continueError.message
+          : "Failed to save venue details.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleSubmit = async (eventForm: React.FormEvent) => {
@@ -277,15 +339,9 @@ export function VenueUploadScreen({
           </div>
 
           {(() => {
-            const parsedLength = lengthFt.trim() ? Number(lengthFt) : null;
-            const parsedWidth = widthFt.trim() ? Number(widthFt) : null;
             const isSmallVenue =
-              (parsedLength != null &&
-                Number.isFinite(parsedLength) &&
-                parsedLength < 16) ||
-              (parsedWidth != null &&
-                Number.isFinite(parsedWidth) &&
-                parsedWidth < 16);
+              (parsedLength != null && parsedLength < 16) ||
+              (parsedWidth != null && parsedWidth < 16);
 
             if (!isSmallVenue) return null;
 
@@ -313,20 +369,56 @@ export function VenueUploadScreen({
                   : "Venue image is required."}
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              {normalizedExistingVenue ? (
+              {normalizedExistingVenue && !venueImageFile ? (
+                <Button
+                  type="button"
+                  className="bg-[#315c4b] text-white hover:bg-[#25483b]"
+                  disabled={submitting || !hasValidDimensions}
+                  onClick={() => void handleContinueWithExisting()}
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    "Save & continue"
+                  )}
+                </Button>
+              ) : null}
+              {normalizedExistingVenue && venueImageFile ? (
                 <Button
                   type="button"
                   variant="outline"
                   disabled={submitting}
-                  onClick={handleContinueWithExisting}
+                  onClick={() => {
+                    setVenueImageFile(null);
+                    setError(null);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = "";
+                    }
+                  }}
                 >
-                  Continue with existing venue
+                  Keep existing image
                 </Button>
               ) : null}
               <Button
                 type="submit"
-                className="bg-[#315c4b] text-white hover:bg-[#25483b]"
-                disabled={!venueImageFile || submitting}
+                className={
+                  normalizedExistingVenue && !venueImageFile
+                    ? undefined
+                    : "bg-[#315c4b] text-white hover:bg-[#25483b]"
+                }
+                variant={
+                  normalizedExistingVenue && !venueImageFile
+                    ? "outline"
+                    : "default"
+                }
+                disabled={
+                  submitting ||
+                  !venueImageFile ||
+                  !hasValidDimensions
+                }
               >
                 {submitting ? (
                   <>

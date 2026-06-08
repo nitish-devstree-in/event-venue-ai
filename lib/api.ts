@@ -197,6 +197,28 @@ export async function uploadVenue(
   });
 }
 
+export type UpdateVenueMetadataPayload = {
+  name?: string;
+  width_ft?: number;
+  length_ft?: number;
+};
+
+export async function updateVenueMetadata(
+  eventId: number,
+  payload: UpdateVenueMetadataPayload,
+): Promise<VenueRecord> {
+  const venue = await apiRequest<VenueRecord>(`/events/${eventId}/venue`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  return {
+    ...venue,
+    image_url: venue.venue_image_url ?? venue.image_url ?? null,
+  };
+}
+
 export async function uploadVenueLayout(
   eventId: number,
   layoutImage: Blob | File,

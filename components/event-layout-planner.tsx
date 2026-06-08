@@ -16,11 +16,16 @@ import {
 
 import { ProductMasterPanel } from "@/components/product-master-panel";
 import { Button } from "@/components/ui/button";
-import { type ProductMasterRecord, type VenueRecord, uploadVenueLayout } from "@/lib/api";
+import {
+  type ProductMasterRecord,
+  type VenueRecord,
+  uploadVenueLayout,
+} from "@/lib/api";
 import {
   buildProductTemplateMap,
   clampObjectSize,
   getCatalogDimensions,
+  getInitialPlacementDimensions,
   getResizeLimits,
   normalizeProductCategory,
   PLANNER_PRODUCT_DRAG_TYPE,
@@ -30,111 +35,17 @@ import {
 } from "@/lib/product-master-planner";
 
 const CANVAS_VIEW_SIZE = 1000;
-const SNAPSHOT_LEGEND_GAP = 24;
-const SNAPSHOT_LEGEND_ROW_GAP = 36;
-const SNAPSHOT_LEGEND_HEADER_HEIGHT = 76;
-const SNAPSHOT_LEGEND_PADDING = 20;
-
-function getSnapshotDimensions(objectCount: number) {
-  const legendHeight =
-    SNAPSHOT_LEGEND_HEADER_HEIGHT +
-    objectCount * SNAPSHOT_LEGEND_ROW_GAP +
-    SNAPSHOT_LEGEND_PADDING;
-  const legendTop = CANVAS_VIEW_SIZE + SNAPSHOT_LEGEND_GAP;
-  const height = legendTop + legendHeight;
-
-  return {
-    width: CANVAS_VIEW_SIZE,
-    height,
-    legendTop,
-    legendHeight,
-  };
-}
-
-const snapshotImageDataUrlCache = new Map<string, string>();
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () =>
-      reject(reader.error ?? new Error("Failed to read image blob"));
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function fetchImageAsDataUrl(url: string): Promise<string> {
-  const absoluteUrl = new URL(url, window.location.href).href;
-  const cached = snapshotImageDataUrlCache.get(absoluteUrl);
-  if (cached) {
-    return cached;
-  }
-
-  let response: Response | null = null;
-
-  try {
-    const direct = await fetch(absoluteUrl, {
-      mode: "cors",
-      credentials: "omit",
-    });
-    if (direct.ok) {
-      response = direct;
-    }
-  } catch {
-    // Fall back to same-origin proxy below.
-  }
-
-  if (!response) {
-    const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(absoluteUrl)}`;
-    const proxied = await fetch(proxyUrl);
-    if (!proxied.ok) {
-      throw new Error(`Failed to load image (${proxied.status})`);
-    }
-    response = proxied;
-  }
-
-  const dataUrl = await blobToDataUrl(await response.blob());
-  snapshotImageDataUrlCache.set(absoluteUrl, dataUrl);
-  return dataUrl;
-}
-
-async function embedSvgExternalImages(clone: SVGSVGElement): Promise<void> {
-  const xlinkNS = "http://www.w3.org/1999/xlink";
-  const images = Array.from(clone.querySelectorAll("image"));
-
-  await Promise.all(
-    images.map(async (element) => {
-      const href =
-        element.getAttribute("href") ??
-        element.getAttributeNS(xlinkNS, "href");
-      if (!href || href.startsWith("data:") || href.startsWith("blob:")) {
-        return;
-      }
-
-      try {
-        const dataUrl = await fetchImageAsDataUrl(href);
-        element.setAttribute("href", dataUrl);
-        element.removeAttributeNS(xlinkNS, "href");
-      } catch (error) {
-        console.warn(
-          "Snapshot: removing image that could not be embedded",
-          href,
-          error,
-        );
-        element.remove();
-      }
-    }),
-  );
-}
-
-async function prepareSnapshotClone(
+const MIN_VENUE_FT = 5;
+const MAX_VENUE_LENGTH_FT = 500;
+const MAX_VENUE_WIDTH_FT = 500;
+const DEFAULT_PLACEMENT_GAP_FT = 4;
+function prepareSnapshotClone(
   svg: SVGSVGElement,
   snapshotWidth: number,
   snapshotHeight: number,
 ) {
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
   clone.setAttribute("viewBox", `0 0 ${snapshotWidth} ${snapshotHeight}`);
   clone.setAttribute("width", "2000");
   clone.setAttribute(
@@ -145,12 +56,16 @@ async function prepareSnapshotClone(
   clone
     .querySelectorAll("[data-editor-only='true']")
     .forEach((node) => node.remove());
-  clone.querySelectorAll("[data-snapshot-only='true']").forEach((node) => {
+  clone
+    .querySelectorAll("[data-canvas-only='true']")
+    .forEach((node) => node.remove());
+  clone.querySelectorAll("[data-layout-only='true']").forEach((node) => {
     node.removeAttribute("display");
+    node.removeAttribute("style");
+  });
+  clone.querySelectorAll("g[opacity]").forEach((node) => {
     node.setAttribute("opacity", "1");
   });
-
-  await embedSvgExternalImages(clone);
 
   return clone;
 }
@@ -223,54 +138,17 @@ type PlannerObject = PlannerTemplate & {
   rotation: number;
 };
 
-const FIXED_VISUAL_SIZES: Record<string, { width: number; height: number }> = {
-  seating: { width: 56, height: 56 },
-  sofa: { width: 84, height: 56 },
-  furniture: { width: 84, height: 56 },
-  mandap: { width: 96, height: 96 },
-  decor: { width: 88, height: 88 },
-  stage: { width: 104, height: 48 },
-  backdrop: { width: 104, height: 40 },
-  aisle: { width: 48, height: 84 },
-  dining: { width: 80, height: 52 },
-  default: { width: 64, height: 64 },
-};
-
-function resolveVisualCategory(object: PlannerObject): string {
-  const nameLower = object.label.toLowerCase();
-  const category = normalizeProductCategory(object.category) ?? "";
-
-  if (nameLower.includes("sofa")) return "sofa";
-  if (nameLower.includes("mandap")) return "mandap";
-  if (nameLower.includes("chair") || nameLower.includes("seat")) return "seating";
-
-  return category || "default";
-}
-
-function getFixedVisualSize(object: PlannerObject): { width: number; height: number } {
-  const key = resolveVisualCategory(object);
-  return FIXED_VISUAL_SIZES[key] ?? FIXED_VISUAL_SIZES.default;
-}
-
 function objectToVisualDisplay(
   object: PlannerObject,
   venueLength: number,
   venueWidth: number,
 ): PlannerObject {
-  const fixed = getFixedVisualSize(object);
-  const anchorX = toDisplayX(object.x, venueLength);
-  const anchorY = toDisplayY(object.y, venueWidth);
-  const logicalWidth = toDisplayX(object.width, venueLength);
-  const logicalHeight = toDisplayY(object.height, venueWidth);
-  const centerX = anchorX + logicalWidth / 2;
-  const centerY = anchorY + logicalHeight / 2;
-
   return {
     ...object,
-    x: centerX - fixed.width / 2,
-    y: centerY - fixed.height / 2,
-    width: fixed.width,
-    height: fixed.height,
+    x: toDisplayX(object.x, venueLength),
+    y: toDisplayY(object.y, venueWidth),
+    width: toDisplayX(object.width, venueLength),
+    height: toDisplayY(object.height, venueWidth),
   };
 }
 
@@ -469,6 +347,14 @@ function findOpenPlacementPosition(
     if (isFree(preferredPosition.x, preferredPosition.y)) {
       return preferredPosition;
     }
+  } else {
+    const centerPosition = clampPosition(
+      venueLength / 2 - catalog.width / 2,
+      venueWidth / 2 - catalog.height / 2,
+    );
+    if (isFree(centerPosition.x, centerPosition.y)) {
+      return centerPosition;
+    }
   }
 
   const gridSlots =
@@ -637,6 +523,24 @@ const makeObjectId = (productMasterId: number) =>
 
 const formatNumber = (value: number) => Number(value.toFixed(1));
 
+function getHandleDisplayPoint(
+  object: PlannerObject,
+  handle: ResizeHandle,
+  venueLength: number,
+  venueWidth: number,
+): Point {
+  const config = resizeHandles.find((entry) => entry.handle === handle);
+  if (!config) {
+    return { x: 0, y: 0 };
+  }
+
+  const feetPoint = config.getPoint(object);
+  return {
+    x: toDisplayX(feetPoint.x, venueLength),
+    y: toDisplayY(feetPoint.y, venueWidth),
+  };
+}
+
 function getGridPosition(
   index: number,
   objectWidth: number,
@@ -644,7 +548,7 @@ function getGridPosition(
   venueLength: number,
   venueWidth: number,
 ): Point {
-  const gap = 1;
+  const gap = DEFAULT_PLACEMENT_GAP_FT;
   const cols = Math.max(
     1,
     Math.floor((venueLength - gap) / (objectWidth + gap)),
@@ -693,6 +597,8 @@ export function EventLayoutPlanner({
   const [interaction, setInteraction] = React.useState<InteractionState | null>(
     null,
   );
+  const interactionRef = React.useRef<InteractionState | null>(null);
+  interactionRef.current = interaction;
   const [placementError, setPlacementError] = React.useState<string | null>(
     null,
   );
@@ -771,16 +677,17 @@ export function EventLayoutPlanner({
     return lines;
   }, [venueLength, venueWidth]);
 
-  const snapshotDimensions = React.useMemo(
-    () => getSnapshotDimensions(objects.length),
-    [objects.length],
-  );
   const venueAreaSqFt = venueLength * venueWidth;
 
   const resolveObjectDimensions = React.useCallback(
     (template: PlannerTemplate) =>
-      getCatalogDimensions(template.category, template.label),
-    [],
+      getInitialPlacementDimensions(
+        template.category,
+        template.label,
+        venueLength,
+        venueWidth,
+      ),
+    [venueLength, venueWidth],
   );
 
   const getLimitsForTemplate = React.useCallback(
@@ -1073,7 +980,8 @@ export function EventLayoutPlanner({
             ...object,
             ...patch,
             ...size,
-            rotation: clamp(patch.rotation ?? object.rotation, 0, 355),
+            rotation:
+              ((patch.rotation ?? object.rotation) % 360 + 360) % 360,
           };
 
           return {
@@ -1096,7 +1004,8 @@ export function EventLayoutPlanner({
   );
 
   const handleVenueLengthChange = (value: number) => {
-    const nextLength = clamp(value, 5, 180);
+    if (!Number.isFinite(value)) return;
+    const nextLength = clamp(value, MIN_VENUE_FT, MAX_VENUE_LENGTH_FT);
     setVenueLength(nextLength);
     setObjects((currentObjects) =>
       currentObjects.map((object) => {
@@ -1126,7 +1035,8 @@ export function EventLayoutPlanner({
   };
 
   const handleVenueWidthChange = (value: number) => {
-    const nextWidth = clamp(value, 5, 120);
+    if (!Number.isFinite(value)) return;
+    const nextWidth = clamp(value, MIN_VENUE_FT, MAX_VENUE_WIDTH_FT);
     setVenueWidth(nextWidth);
     setObjects((currentObjects) =>
       currentObjects.map((object) => {
@@ -1169,6 +1079,18 @@ export function EventLayoutPlanner({
     });
   };
 
+  const rotateObject90 = React.useCallback(
+    (objectId: string) => {
+      const object = objects.find((item) => item.id === objectId);
+      if (!object) return;
+
+      updateObject(objectId, {
+        rotation: (object.rotation + 90) % 360,
+      });
+    },
+    [objects, updateObject],
+  );
+
   const startObjectMove = (
     event: React.PointerEvent<SVGGElement>,
     object: PlannerObject,
@@ -1198,7 +1120,7 @@ export function EventLayoutPlanner({
       startPoint: point,
       originals,
     });
-    event.currentTarget.setPointerCapture(event.pointerId);
+    svgRef.current?.setPointerCapture(event.pointerId);
   };
 
   const startResize = (
@@ -1223,71 +1145,115 @@ export function EventLayoutPlanner({
       },
       startPoint: getPointInVenue(event.clientX, event.clientY),
     });
-    event.currentTarget.setPointerCapture(event.pointerId);
+    svgRef.current?.setPointerCapture(event.pointerId);
   };
 
-  const moveOrResizeObject = (event: React.PointerEvent<SVGSVGElement>) => {
+  const applyInteractionMove = React.useCallback(
+    (clientX: number, clientY: number) => {
+      const activeInteraction = interactionRef.current;
+      if (!activeInteraction) {
+        return;
+      }
+
+      const point = getPointInVenue(clientX, clientY);
+
+      if (activeInteraction.type === "move") {
+        const deltaX = point.x - activeInteraction.startPoint.x;
+        const deltaY = point.y - activeInteraction.startPoint.y;
+
+        setObjects((currentObjects) =>
+          currentObjects.map((object) => {
+            const original = activeInteraction.originals[object.id];
+
+            if (!original) {
+              return object;
+            }
+
+            return {
+              ...object,
+              x: clamp(
+                original.x + deltaX,
+                0,
+                Math.max(0, venueLength - object.width),
+              ),
+              y: clamp(
+                original.y + deltaY,
+                0,
+                Math.max(0, venueWidth - object.height),
+              ),
+            };
+          }),
+        );
+        return;
+      }
+
+      const deltaX = point.x - activeInteraction.startPoint.x;
+      const deltaY = point.y - activeInteraction.startPoint.y;
+      const { original, handle } = activeInteraction;
+      const next = { ...original };
+
+      if (handle.includes("e")) {
+        next.width = original.width + deltaX;
+      }
+      if (handle.includes("s")) {
+        next.height = original.height + deltaY;
+      }
+      if (handle.includes("w")) {
+        next.x = original.x + deltaX;
+        next.width = original.width - deltaX;
+      }
+      if (handle.includes("n")) {
+        next.y = original.y + deltaY;
+        next.height = original.height - deltaY;
+      }
+
+      updateObject(activeInteraction.id, next);
+    },
+    [getPointInVenue, updateObject, venueLength, venueWidth],
+  );
+
+  React.useEffect(() => {
     if (!interaction) {
       return;
     }
 
-    const point = getPointInVenue(event.clientX, event.clientY);
+    const pointerId = interaction.pointerId;
 
-    if (interaction.type === "move") {
-      const deltaX = point.x - interaction.startPoint.x;
-      const deltaY = point.y - interaction.startPoint.y;
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+      applyInteractionMove(event.clientX, event.clientY);
+    };
 
-      setObjects((currentObjects) =>
-        currentObjects.map((object) => {
-          const original = interaction.originals[object.id];
+    const finishPointer = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) {
+        return;
+      }
+      setInteraction(null);
+    };
 
-          if (!original) {
-            return object;
-          }
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishPointer);
+    window.addEventListener("pointercancel", finishPointer);
 
-          return {
-            ...object,
-            x: clamp(
-              original.x + deltaX,
-              0,
-              Math.max(0, venueLength - object.width),
-            ),
-            y: clamp(
-              original.y + deltaY,
-              0,
-              Math.max(0, venueWidth - object.height),
-            ),
-          };
-        }),
-      );
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishPointer);
+      window.removeEventListener("pointercancel", finishPointer);
+    };
+  }, [interaction, applyInteractionMove]);
+
+  const moveOrResizeObject = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (!interactionRef.current) {
       return;
     }
 
-    const deltaX = point.x - interaction.startPoint.x;
-    const deltaY = point.y - interaction.startPoint.y;
-    const { original, handle } = interaction;
-    const next = { ...original };
-
-    if (handle.includes("e")) {
-      next.width = original.width + deltaX;
-    }
-    if (handle.includes("s")) {
-      next.height = original.height + deltaY;
-    }
-    if (handle.includes("w")) {
-      next.x = original.x + deltaX;
-      next.width = original.width - deltaX;
-    }
-    if (handle.includes("n")) {
-      next.y = original.y + deltaY;
-      next.height = original.height - deltaY;
-    }
-
-    updateObject(interaction.id, next);
+    applyInteractionMove(event.clientX, event.clientY);
   };
 
   const finishInteraction = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (interaction?.pointerId === event.pointerId) {
+    if (interactionRef.current?.pointerId === event.pointerId) {
       setInteraction(null);
     }
   };
@@ -1356,11 +1322,7 @@ export function EventLayoutPlanner({
         throw new Error("SVG element not found");
       }
 
-      const clone = await prepareSnapshotClone(
-        svg,
-        snapshotDimensions.width,
-        snapshotDimensions.height,
-      );
+      const clone = prepareSnapshotClone(svg, CANVAS_VIEW_SIZE, CANVAS_VIEW_SIZE);
       const pngBlob = await renderSvgCloneToPngBlob(clone);
       const updatedVenue = await uploadVenueLayout(eventId, pngBlob);
       await onContinue?.(updatedVenue);
@@ -1379,17 +1341,13 @@ export function EventLayoutPlanner({
     }
 
     try {
-      const clone = await prepareSnapshotClone(
-        svg,
-        snapshotDimensions.width,
-        snapshotDimensions.height,
-      );
+      const clone = prepareSnapshotClone(svg, CANVAS_VIEW_SIZE, CANVAS_VIEW_SIZE);
       const pngBlob = await renderSvgCloneToPngBlob(clone);
       const url = URL.createObjectURL(pngBlob);
 
       try {
         const link = document.createElement("a");
-        link.download = "wedding-layout-ai-reference.png";
+        link.download = "wedding-layout.png";
         link.href = url;
         link.click();
       } finally {
@@ -1445,16 +1403,16 @@ export function EventLayoutPlanner({
               <NumberField
                 label="Length"
                 value={venueLength}
-                min={5}
-                max={180}
+                min={MIN_VENUE_FT}
+                max={MAX_VENUE_LENGTH_FT}
                 suffix="ft"
                 onChange={handleVenueLengthChange}
               />
               <NumberField
                 label="Width"
                 value={venueWidth}
-                min={5}
-                max={120}
+                min={MIN_VENUE_FT}
+                max={MAX_VENUE_WIDTH_FT}
                 suffix="ft"
                 onChange={handleVenueWidthChange}
               />
@@ -1494,8 +1452,8 @@ export function EventLayoutPlanner({
             <Button
               type="button"
               className="flex-1 bg-[#315c4b] text-white hover:bg-[#25483b]"
-              onClick={downloadSnapshot}
-              title="Download AI reference snapshot"
+              onClick={() => void downloadSnapshot()}
+              title="Download layout PNG"
             >
               <Download />
               Snapshot
@@ -1619,16 +1577,11 @@ export function EventLayoutPlanner({
                   selected={selectedIdSet.has(object.id)}
                   overlapInfo={overlapInfoMap.get(object.id)}
                   onPointerDown={startObjectMove}
+                  onResizeStart={startResize}
+                  onRotate90={rotateObject90}
                 />
               ))}
 
-              <SnapshotLegend
-                objects={objects}
-                legendTop={snapshotDimensions.legendTop}
-                venueLength={venueLength}
-                venueWidth={venueWidth}
-                overlapIds={overlapIds}
-              />
             </svg>
           </div>
         </section>
@@ -1684,7 +1637,12 @@ function NumberField({
           max={max}
           step={step}
           value={Number.isFinite(value) ? value : min}
-          onChange={(event) => onChange(Number(event.target.value))}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (Number.isFinite(next)) {
+              onChange(next);
+            }
+          }}
           className="h-full min-w-0 flex-1 bg-transparent px-3 text-sm font-medium outline-none"
         />
         <span className="px-3 text-xs font-semibold text-[#6f756a]">
@@ -1703,6 +1661,8 @@ function PlannerShape({
   selected,
   overlapInfo,
   onPointerDown,
+  onResizeStart,
+  onRotate90,
 }: {
   object: PlannerObject;
   index: number;
@@ -1714,8 +1674,20 @@ function PlannerShape({
     event: React.PointerEvent<SVGGElement>,
     object: PlannerObject,
   ) => void;
+  onResizeStart: (
+    event: React.PointerEvent<SVGCircleElement>,
+    object: PlannerObject,
+    handle: ResizeHandle,
+  ) => void;
+  onRotate90: (objectId: string) => void;
 }) {
   const display = objectToVisualDisplay(object, venueLength, venueWidth);
+  const logicalLeft = toDisplayX(object.x, venueLength);
+  const logicalTop = toDisplayY(object.y, venueWidth);
+  const logicalWidth = toDisplayX(object.width, venueLength);
+  const logicalHeight = toDisplayY(object.height, venueWidth);
+  const rotationCenterX = logicalLeft + logicalWidth / 2;
+  const rotationCenterY = logicalTop + logicalHeight / 2;
   const centerX = display.x + display.width / 2;
   const centerY = display.y + display.height / 2;
   const minDimension = Math.min(display.width, display.height);
@@ -1726,9 +1698,14 @@ function PlannerShape({
   );
   const badgeOffset = badgeRadius + 1.5;
   const labelSize = Math.min(Math.max(4.5, minDimension * 0.16), 10);
-  const showLabel = selected || minDimension >= 48;
+  const dimensionSize = Math.min(Math.max(4, minDimension * 0.14), 9);
+  const showDimensions = minDimension >= 28;
   const selectionPadding = Math.max(2.5, uiUnit * 0.8);
   const selectionStroke = Math.max(1.2, uiUnit * 0.18);
+  const handleRadius = Math.max(3.5, uiUnit * 1.1);
+  const rotateHandleOffset = handleRadius * 2.8;
+  const rotateHandleY =
+    logicalTop - selectionPadding - rotateHandleOffset;
   const cornerRadius = Math.min(8, display.width / 8, display.height / 8);
   const isOverlapping = Boolean(overlapInfo);
   // Top object = smaller/later → rendered on top naturally by SVG z-order → apply 0.8 opacity
@@ -1736,7 +1713,7 @@ function PlannerShape({
 
   return (
     <g
-      transform={`rotate(${object.rotation} ${centerX} ${centerY})`}
+      transform={`rotate(${object.rotation} ${rotationCenterX} ${rotationCenterY})`}
       onPointerDown={(event) => onPointerDown(event, object)}
       className="cursor-grab active:cursor-grabbing"
       // Top overlapping object → semi-transparent so object beneath is visible
@@ -1767,6 +1744,25 @@ function PlannerShape({
 
       <ObjectIllustration object={display} />
 
+      {showDimensions ? (
+        <text
+          x={centerX}
+          y={centerY}
+          textAnchor="middle"
+          dominantBaseline="central"
+          fontFamily="Arial, sans-serif"
+          fontSize={dimensionSize}
+          fontWeight="600"
+          fill="#1f2520"
+          paintOrder="stroke"
+          stroke="#fffdf8"
+          strokeWidth={Math.max(0.4, dimensionSize * 0.15)}
+          pointerEvents="none"
+        >
+          {formatNumber(object.width)} x {formatNumber(object.height)} ft
+        </text>
+      ) : null}
+
       <circle
         cx={display.x + badgeOffset}
         cy={display.y + badgeOffset}
@@ -1790,24 +1786,22 @@ function PlannerShape({
         {index}
       </text>
 
-      {showLabel ? (
-        <text
-          x={centerX}
-          y={display.y + display.height + labelSize * 0.9}
-          textAnchor="middle"
-          dominantBaseline="hanging"
-          fontFamily="Arial, sans-serif"
-          fontSize={labelSize}
-          fontWeight="600"
-          fill="#1f2520"
-          paintOrder="stroke"
-          stroke="#fffdf8"
-          strokeWidth={Math.max(0.5, labelSize * 0.18)}
-          pointerEvents="none"
-        >
-          {object.label}
-        </text>
-      ) : null}
+      <text
+        x={centerX}
+        y={display.y + display.height + labelSize * 0.9}
+        textAnchor="middle"
+        dominantBaseline="hanging"
+        fontFamily="Arial, sans-serif"
+        fontSize={labelSize}
+        fontWeight="600"
+        fill="#1f2520"
+        paintOrder="stroke"
+        stroke="#fffdf8"
+        strokeWidth={Math.max(0.5, labelSize * 0.18)}
+        pointerEvents="none"
+      >
+        {object.label}
+      </text>
 
       {/* Cluster badge on the top object showing how many are overlapping */}
       {overlapInfo?.showClusterBadge ? (
@@ -1841,22 +1835,87 @@ function PlannerShape({
         width={display.width}
         height={display.height}
         fill="transparent"
-        pointerEvents="all"
+        pointerEvents={selected ? "none" : "all"}
       />
 
       {selected ? (
-        <g data-editor-only="true" pointerEvents="none">
+        <g data-editor-only="true">
           <rect
-            x={display.x - selectionPadding}
-            y={display.y - selectionPadding}
-            width={display.width + selectionPadding * 2}
-            height={display.height + selectionPadding * 2}
+            x={logicalLeft - selectionPadding}
+            y={logicalTop - selectionPadding}
+            width={logicalWidth + selectionPadding * 2}
+            height={logicalHeight + selectionPadding * 2}
             rx={Math.max(4, uiUnit * 0.8)}
             fill="none"
             stroke="#111827"
             strokeDasharray={`${uiUnit * 1.5} ${uiUnit * 1.1}`}
             strokeWidth={selectionStroke}
+            pointerEvents="none"
           />
+
+          {resizeHandles.map(({ handle, cursor }) => {
+            const point = getHandleDisplayPoint(
+              object,
+              handle,
+              venueLength,
+              venueWidth,
+            );
+
+            return (
+              <circle
+                key={handle}
+                cx={point.x}
+                cy={point.y}
+                r={handleRadius}
+                fill="#ffffff"
+                stroke="#111827"
+                strokeWidth={Math.max(1, uiUnit * 0.14)}
+                style={{ cursor }}
+                onPointerDown={(event) => onResizeStart(event, object, handle)}
+              />
+            );
+          })}
+
+          <line
+            x1={rotationCenterX}
+            y1={logicalTop - selectionPadding}
+            x2={rotationCenterX}
+            y2={rotateHandleY + handleRadius}
+            stroke="#111827"
+            strokeWidth={Math.max(1, uiUnit * 0.12)}
+            pointerEvents="none"
+          />
+          <g
+            style={{ cursor: "pointer" }}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onRotate90(object.id);
+            }}
+          >
+            <circle
+              cx={rotationCenterX}
+              cy={rotateHandleY}
+              r={handleRadius}
+              fill="#ffffff"
+              stroke="#111827"
+              strokeWidth={Math.max(1, uiUnit * 0.14)}
+            />
+            <path
+              d={`M ${rotationCenterX - handleRadius * 0.35} ${rotateHandleY - handleRadius * 0.1}
+                A ${handleRadius * 0.42} ${handleRadius * 0.42} 0 1 1 ${rotationCenterX + handleRadius * 0.35} ${rotateHandleY - handleRadius * 0.1}
+                M ${rotationCenterX + handleRadius * 0.35} ${rotateHandleY - handleRadius * 0.1}
+                L ${rotationCenterX + handleRadius * 0.55} ${rotateHandleY - handleRadius * 0.35}
+                M ${rotationCenterX + handleRadius * 0.35} ${rotateHandleY - handleRadius * 0.1}
+                L ${rotationCenterX + handleRadius * 0.55} ${rotateHandleY + handleRadius * 0.05}`}
+              fill="none"
+              stroke="#111827"
+              strokeWidth={Math.max(0.8, uiUnit * 0.12)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              pointerEvents="none"
+            />
+          </g>
         </g>
       ) : null}
     </g>
@@ -1870,19 +1929,37 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
   const innerWidth = Math.max(0, object.width - inset * 2);
   const innerHeight = Math.max(0, object.height - inset * 2);
 
-  if (object.imageSrc) {
-    return (
-      <image
-        href={object.imageSrc}
-        x={innerX}
-        y={innerY}
-        width={innerWidth}
-        height={innerHeight}
-        preserveAspectRatio="xMidYMid meet"
+  return (
+    <>
+      <g
+        data-layout-only="true"
+        display={object.imageSrc ? "none" : undefined}
         pointerEvents="none"
-      />
-    );
-  }
+      >
+        <LayoutSchematic object={object} />
+      </g>
+      {object.imageSrc ? (
+        <image
+          data-canvas-only="true"
+          href={object.imageSrc}
+          x={innerX}
+          y={innerY}
+          width={innerWidth}
+          height={innerHeight}
+          preserveAspectRatio="xMidYMid meet"
+          pointerEvents="none"
+        />
+      ) : null}
+    </>
+  );
+}
+
+function LayoutSchematic({ object }: { object: PlannerObject }) {
+  const inset = Math.min(object.width, object.height) * 0.06;
+  const innerX = object.x + inset;
+  const innerY = object.y + inset;
+  const innerWidth = Math.max(0, object.width - inset * 2);
+  const innerHeight = Math.max(0, object.height - inset * 2);
 
   const category = normalizeProductCategory(object.category) ?? "";
   const nameLower = object.label.toLowerCase();
@@ -2088,72 +2165,5 @@ function ObjectIllustration({ object }: { object: PlannerObject }) {
       opacity="0.9"
       pointerEvents="none"
     />
-  );
-}
-
-function SnapshotLegend({
-  objects,
-  legendTop,
-  venueLength,
-  venueWidth,
-  overlapIds,
-}: {
-  objects: PlannerObject[];
-  legendTop: number;
-  venueLength: number;
-  venueWidth: number;
-  overlapIds: Set<string>;
-}) {
-  const legendHeight =
-    SNAPSHOT_LEGEND_HEADER_HEIGHT +
-    objects.length * SNAPSHOT_LEGEND_ROW_GAP +
-    SNAPSHOT_LEGEND_PADDING;
-
-  return (
-    <g data-snapshot-only="true" display="none" opacity="0">
-      <rect
-        x="0"
-        y={legendTop}
-        width={CANVAS_VIEW_SIZE}
-        height={legendHeight}
-        fill="#ffffff"
-        stroke="#d8d1c3"
-        strokeWidth="2"
-      />
-      <text
-        x="16"
-        y={legendTop + 28}
-        fontFamily="Arial, sans-serif"
-        fontSize="24"
-        fontWeight="700"
-        fill="#1f2520"
-      >
-        AI layout reference details
-      </text>
-      <text
-        x="16"
-        y={legendTop + 56}
-        fontFamily="Arial, sans-serif"
-        fontSize="18"
-        fill="#4b5563"
-      >
-        Venue: {venueLength} ft x {venueWidth} ft. Objects are numbered on the
-        plan. Red outline means overlapping placement.
-      </text>
-      {objects.map((object, index) => (
-        <text
-          key={object.id}
-          x="16"
-          y={legendTop + SNAPSHOT_LEGEND_HEADER_HEIGHT + index * SNAPSHOT_LEGEND_ROW_GAP}
-          fontFamily="Arial, sans-serif"
-          fontSize="20"
-          fill={overlapIds.has(object.id) ? "#b91c1c" : "#1f2937"}
-        >
-          {index + 1}. {object.label}: {formatNumber(object.width)} ft x{" "}
-          {formatNumber(object.height)} ft, position x {formatNumber(object.x)}{" "}
-          ft y {formatNumber(object.y)} ft, rotation {object.rotation} deg
-        </text>
-      ))}
-    </g>
   );
 }
